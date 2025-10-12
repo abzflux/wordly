@@ -111,32 +111,32 @@ class WordGameBot {
                 )
             `);
 
-            // جدول بازی‌های دو نفره
-            await this.db.query(`
-                CREATE TABLE IF NOT EXISTS multiplayer_games (
-                    gameId VARCHAR(10) PRIMARY KEY,
-                    creatorId BIGINT NOT NULL,
-                    opponentId BIGINT,
-                    word VARCHAR(255),
-                    wordLength INTEGER DEFAULT 0,
-                    category VARCHAR(100) DEFAULT 'عمومی',
-                    hints INTEGER DEFAULT 2,
-                    hintsUsed INTEGER DEFAULT 0,
-                    maxAttempts INTEGER DEFAULT 6,
-                    attempts INTEGER DEFAULT 0,
-                    guessedLetters TEXT,
-                    currentWordState VARCHAR(255),
-                    status VARCHAR(20) CHECK (status IN ('waiting', 'active', 'completed', 'cancelled')) DEFAULT 'waiting',
-                    winnerId BIGINT,
-                    creatorScore INTEGER DEFAULT 0,
-                    opponentScore INTEGER DEFAULT 0,
-                    lastActivity TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                    createdAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                    updatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (creatorId) REFERENCES users(userId) ON DELETE CASCADE,
-                    FOREIGN KEY (opponentId) REFERENCES users(userId) ON DELETE CASCADE
-                )
-            `);
+             // جدول بازی‌های دو نفره - با ستون lastActivity
+			await this.db.query(`
+				CREATE TABLE IF NOT EXISTS multiplayer_games (
+					gameId VARCHAR(10) PRIMARY KEY,
+					creatorId BIGINT NOT NULL,
+					opponentId BIGINT,
+					word VARCHAR(255),
+					wordLength INTEGER DEFAULT 0,
+					category VARCHAR(100) DEFAULT 'عمومی',
+					hints INTEGER DEFAULT 2,
+					hintsUsed INTEGER DEFAULT 0,
+					maxAttempts INTEGER DEFAULT 6,
+					attempts INTEGER DEFAULT 0,
+					guessedLetters TEXT,
+					currentWordState VARCHAR(255),
+					status VARCHAR(20) CHECK (status IN ('waiting', 'active', 'completed', 'cancelled')) DEFAULT 'waiting',
+					winnerId BIGINT,
+					creatorScore INTEGER DEFAULT 0,
+					opponentScore INTEGER DEFAULT 0,
+					lastActivity TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+					createdAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+					updatedAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+					FOREIGN KEY (creatorId) REFERENCES users(userId) ON DELETE CASCADE,
+					FOREIGN KEY (opponentId) REFERENCES users(userId) ON DELETE CASCADE
+				)
+			`);
 
             // جدول درخواست‌های راهنمایی
             await this.db.query(`
@@ -176,23 +176,27 @@ class WordGameBot {
     }
 
     async loadActiveGames() {
-        try {
-            const result = await this.db.query(
-                "SELECT * FROM multiplayer_games WHERE status IN ('waiting', 'active')"
-            );
-            
-            result.rows.forEach(game => {
-                this.activeMultiplayerGames.set(game.gameid, game);
-                if (game.status === 'waiting') {
-                    this.waitingGames.set(game.creatorid, game.gameid);
-                }
-            });
-            
-            this.log(`✅ ${result.rows.length} بازی فعال لود شد`);
-        } catch (error) {
-            this.log(`❌ خطا در لود بازی‌های فعال: ${error.message}`);
-        }
-    }
+			try {
+				const result = await this.db.query(
+					"SELECT * FROM multiplayer_games WHERE status IN ('waiting', 'active')"
+				);
+				
+				result.rows.forEach(game => {
+					// اطمینان از وجود lastActivity در آبجکت بازی
+					if (!game.lastactivity) {
+						game.lastactivity = game.createdat || new Date();
+					}
+					this.activeMultiplayerGames.set(game.gameid, game);
+					if (game.status === 'waiting') {
+						this.waitingGames.set(game.creatorid, game.gameid);
+					}
+				});
+				
+				this.log(`✅ ${result.rows.length} بازی فعال لود شد`);
+			} catch (error) {
+				this.log(`❌ خطا در لود بازی‌های فعال: ${error.message}`);
+			}
+		}
 
     generateGameId() {
         return Math.random().toString(36).substring(2, 8).toUpperCase();
@@ -1154,57 +1158,58 @@ class WordGameBot {
     }
 
     async showMyGames(chatId, userId, firstName) {
-        try {
-            const result = await this.db.query(
-                'SELECT * FROM multiplayer_games WHERE (creatorId = $1 OR opponentId = $1) AND status IN ($2, $3) ORDER BY lastActivity DESC',
-                [userId, 'waiting', 'active']
-            );
+		try {
+			// استفاده از createdat به جای lastactivity
+			const result = await this.db.query(
+				'SELECT * FROM multiplayer_games WHERE (creatorId = $1 OR opponentId = $1) AND status IN ($2, $3) ORDER BY createdAt DESC',
+				[userId, 'waiting', 'active']
+			);
 
-            if (result.rows.length === 0) {
-                await bot.sendMessage(chatId,
-                    "📋 <b>بازی‌های فعال شما</b>\n\n" +
-                    "⏳ هیچ بازی فعالی ندارید.\n\n" +
-                    "می‌توانید یک بازی جدید ایجاد کنید یا به بازی‌های دیگر بپیوندید.",
-                    {
-                        parse_mode: 'HTML',
-                        ...this.createMultiplayerMenu()
-                    }
-                );
-                return;
-            }
+			if (result.rows.length === 0) {
+				await bot.sendMessage(chatId,
+					"📋 <b>بازی‌های فعال شما</b>\n\n" +
+					"⏳ هیچ بازی فعالی ندارید.\n\n" +
+					"می‌توانید یک بازی جدید ایجاد کنید یا به بازی‌های دیگر بپیوندید.",
+					{
+						parse_mode: 'HTML',
+						...this.createMultiplayerMenu()
+					}
+				);
+				return;
+			}
 
-            let message = "📋 <b>بازی‌های فعال شما</b>\n\n";
-            
-            result.rows.forEach((game, index) => {
-                const role = game.creatorid === userId ? 'سازنده' : 'بازیکن';
-                const status = game.status === 'waiting' ? '⏳ در انتظار' : '🎯 فعال';
-                message += `${index + 1}. 🆔 <code>${game.gameid}</code> - ${role} - ${status}\n`;
-            });
+			let message = "📋 <b>بازی‌های فعال شما</b>\n\n";
+			
+			result.rows.forEach((game, index) => {
+				const role = game.creatorid === userId ? 'سازنده' : 'بازیکن';
+				const status = game.status === 'waiting' ? '⏳ در انتظار' : '🎯 فعال';
+				message += `${index + 1}. 🆔 <code>${game.gameid}</code> - ${role} - ${status}\n`;
+			});
 
-            message += `\n💡 برای مشاهده وضعیت هر بازی، از منوی بازی استفاده کنید.`;
+			message += `\n💡 برای مشاهده وضعیت هر بازی، از منوی بازی استفاده کنید.`;
 
-            const buttons = result.rows.map((game, index) => {
-                return [{
-                    text: `📊 وضعیت بازی ${game.gameid}`,
-                    callback_data: `game_status_${game.gameid}`
-                }];
-            });
+			const buttons = result.rows.map((game, index) => {
+				return [{
+					text: `📊 وضعیت بازی ${game.gameid}`,
+					callback_data: `game_status_${game.gameid}`
+				}];
+			});
 
-            buttons.push([{
-                text: '🔙 بازگشت',
-                callback_data: 'multiplayer'
-            }]);
+			buttons.push([{
+				text: '🔙 بازگشت',
+				callback_data: 'multiplayer'
+			}]);
 
-            await bot.sendMessage(chatId, message, {
-                parse_mode: 'HTML',
-                reply_markup: { inline_keyboard: buttons }
-            });
+			await bot.sendMessage(chatId, message, {
+				parse_mode: 'HTML',
+				reply_markup: { inline_keyboard: buttons }
+			});
 
-        } catch (error) {
-            this.log(`❌ خطا در نمایش بازی‌های کاربر: ${error.message}`);
-            await bot.sendMessage(chatId, '❌ خطا در دریافت بازی‌ها. لطفاً دوباره تلاش کنید.');
-        }
-    }
+		} catch (error) {
+			this.log(`❌ خطا در نمایش بازی‌های کاربر: ${error.message}`);
+			await bot.sendMessage(chatId, '❌ خطا در دریافت بازی‌ها. لطفاً دوباره تلاش کنید.');
+		}
+	}
 
     async handleStats(chatId, userId, firstName) {
         try {
