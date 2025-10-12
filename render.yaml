@@ -4,12 +4,20 @@ services:
     env: node
     plan: free
     region: frankfurt
-    buildCommand: yarn install
+    buildCommand: npm install
     startCommand: node server.js
     envVars:
       - key: BOT_TOKEN
-        value: 8408419647:AAFivpMKAKSGoIWI0Qq8PJ_zrdhQK9wlJFo
+        value: "8408419647:AAFivpMKAKSGoIWI0Qq8PJ_zrdhQK9wlJFo"
       - key: WEB_APP_URL
-        value: https://wordly.ct.ws/
-      - key: NODE_ENV
-        value: production
+        value: "https://wordly.ct.ws/"
+      - key: DB_HOST
+        value: "dpg-d3lquoidbo4c73bbhgu0-a.frankfurt-postgres.render.com"
+      - key: DB_USER
+        value: "abz"
+      - key: DB_PASSWORD
+        value: "NkFFeaYzvXkUEbcp80jW7V0tfDQe6LsC"
+      - key: DB_NAME
+        value: "wordly_db"
+      - key: DB_PORT
+        value: "5432"
