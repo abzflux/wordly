@@ -1,7 +1,7 @@
 {
   "name": "telegram-word-bot",
   "version": "1.0.0",
-  "description": "Telegram Bot for Word Game",
+  "description": "Telegram Bot for Word Game with Multiplayer",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -10,8 +10,7 @@
     "express": "^4.18.0",
     "node-telegram-bot-api": "^0.64.0",
     "node-cron": "^3.0.3",
-    "mysql2": "^3.6.0",
-    "sequelize": "^6.33.0"
+    "pg": "^8.11.0"
   },
   "engines": {
     "node": ">=18"
