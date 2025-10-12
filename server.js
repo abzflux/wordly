@@ -924,10 +924,14 @@ class WordGameBot {
             const game = this.activeMultiplayerGames.get(gameId);
             
             if (!game || game.opponentid !== userId) {
-                await bot.sendMessage(chatId, '❌ بازی یافت نشد یا شما بازیکن این2) {
-                await bot.sendMessage(chatId, '❌ شما تمام راهنمایی‌های خود را استفاده کرده‌اید.');
-                return;
-            }
+				await bot.sendMessage(chatId, '❌ بازی یافت نشد یا شما بازیکن این بازی نیستید.');
+				return;
+			}
+
+			if (game.hintsUsed >= 2) {
+				await bot.sendMessage(chatId, '❌ شما تمام راهنمایی‌های خود را استفاده کرده‌اید.');
+				return;
+			}
 
             // پیدا کردن حرفی که هنوز حدس زده نشده
             const word = game.word;
