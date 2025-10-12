@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: telegram-word-bot
+    env: php
+    plan: free
+    region: frankfurt
+    buildCommand: ""
+    startCommand: php -S 0.0.0.0:$PORT index.php
+    envVars:
+      - key: BOT_TOKEN
+        value: 8408419647:AAFivpMKAKSGoIWI0Qq8PJ_zrdhQK9wlJFo
+      - key: WEB_APP_URL
+        value: https://wordly.ct.ws/
+      - key: NODE_ENV
+        value: production
