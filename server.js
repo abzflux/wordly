@@ -1,6 +1,6 @@
 const express = require('express');
 const TelegramBot = require('node-telegram-bot-api');
-const { spawn } = require('child_process');
+const cron = require('node-cron');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -13,6 +13,7 @@ const WEB_APP_URL = process.env.WEB_APP_URL || 'https://wordly.ct.ws/';
 const bot = new TelegramBot(BOT_TOKEN, { polling: false });
 
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 class WordGameBot {
     constructor() {
@@ -70,10 +71,15 @@ class WordGameBot {
             "• 🎨 طراحی زیبا و ریسپانسیو\n\n" +
             "برای شروع بازی روی دکمه زیر کلیک کنید:";
 
-        await bot.sendMessage(chatId, welcomeText, {
-            parse_mode: 'HTML',
-            ...this.createMainMenu()
-        });
+        try {
+            await bot.sendMessage(chatId, welcomeText, {
+                parse_mode: 'HTML',
+                ...this.createMainMenu()
+            });
+            this.log(`✅ پیام خوش‌آمدگویی برای ${firstName} ارسال شد`);
+        } catch (error) {
+            this.log(`❌ خطا در ارسال پیام: ${error.message}`);
+        }
     }
 
     async handleMessage(msg) {
@@ -84,29 +90,33 @@ class WordGameBot {
 
         this.log(`📩 پیام از ${firstName}: ${text}`);
 
-        switch (text) {
-            case '/start':
-                await this.handleStart(chatId, firstName);
-                break;
-                
-            case '/game':
-                await this.handleGame(chatId);
-                break;
-                
-            case '/stats':
-                await this.handleStats(chatId, userId);
-                break;
-                
-            default:
-                await bot.sendMessage(chatId, 
-                    "🎮 <b>منوی اصلی بازی حدس کلمه</b>\n\n" +
-                    "از گزینه‌های زیر استفاده کنید:",
-                    {
-                        parse_mode: 'HTML',
-                        ...this.createMainMenu()
-                    }
-                );
-                break;
+        try {
+            switch (text) {
+                case '/start':
+                    await this.handleStart(chatId, firstName);
+                    break;
+                    
+                case '/game':
+                    await this.handleGame(chatId);
+                    break;
+                    
+                case '/stats':
+                    await this.handleStats(chatId, userId);
+                    break;
+                    
+                default:
+                    await bot.sendMessage(chatId, 
+                        "🎮 <b>منوی اصلی بازی حدس کلمه</b>\n\n" +
+                        "از گزینه‌های زیر استفاده کنید:",
+                        {
+                            parse_mode: 'HTML',
+                            ...this.createMainMenu()
+                        }
+                    );
+                    break;
+            }
+        } catch (error) {
+            this.log(`❌ خطا در پردازش پیام: ${error.message}`);
         }
     }
 
@@ -117,22 +127,26 @@ class WordGameBot {
 
         this.log(`🔘 کلیک از ${firstName}: ${data}`);
 
-        switch (data) {
-            case 'stats':
-                await this.handleStats(chatId, callbackQuery.from.id);
-                break;
-                
-            case 'leaderboard':
-                await this.handleLeaderboard(chatId);
-                break;
-                
-            case 'help':
-                await this.handleHelp(chatId);
-                break;
-                
-            case 'about':
-                await this.handleAbout(chatId);
-                break;
+        try {
+            switch (data) {
+                case 'stats':
+                    await this.handleStats(chatId, callbackQuery.from.id);
+                    break;
+                    
+                case 'leaderboard':
+                    await this.handleLeaderboard(chatId);
+                    break;
+                    
+                case 'help':
+                    await this.handleHelp(chatId);
+                    break;
+                    
+                case 'about':
+                    await this.handleAbout(chatId);
+                    break;
+            }
+        } catch (error) {
+            this.log(`❌ خطا در پردازش callback: ${error.message}`);
         }
     }
 
@@ -226,6 +240,24 @@ class WordGameBot {
                 ]
             }
         });
+    }
+
+    async setupWebhook() {
+        try {
+            const webhookUrl = `https://${process.env.RENDER_EXTERNAL_HOSTNAME || 'your-app-name.onrender.com'}/webhook`;
+            
+            this.log(`🔄 در حال تنظیم وب‌هوک: ${webhookUrl}`);
+            
+            const response = await bot.setWebHook(webhookUrl);
+            
+            if (response) {
+                this.log('✅ وب‌هوک با موفقیت تنظیم شد');
+            } else {
+                this.log('❌ خطا در تنظیم وب‌هوک');
+            }
+        } catch (error) {
+            this.log(`❌ خطا در تنظیم وب‌هوک: ${error.message}`);
+        }
     }
 
     start() {
@@ -328,9 +360,12 @@ class WordGameBot {
         });
 
         // شروع سرور
-        app.listen(PORT, () => {
+        app.listen(PORT, async () => {
             this.log(`🚀 سرور Node.js اجرا شد روی پورت: ${PORT}`);
-            this.log(`🌐 آدرس وب‌هوک: https://your-app.onrender.com/webhook`);
+            
+            // تنظیم وب‌هوک پس از راه‌اندازی سرور
+            await this.setupWebhook();
+            
             this.log(`🤖 ربات آماده دریافت پیام...`);
         });
     }
@@ -340,12 +375,16 @@ class WordGameBot {
 const gameBot = new WordGameBot();
 gameBot.start();
 
-// جلوگیری از خوابیدن (Ping هر ۱۴ دقیقه)
-setInterval(() => {
-    fetch(`https://${process.env.RENDER_EXTERNAL_URL || 'your-app.onrender.com'}`)
-        .then(() => console.log('🔄 Keeping alive...'))
-        .catch(err => console.log('❌ Keep-alive failed:', err.message));
-}, 14 * 60 * 1000);
+// جلوگیری از خوابیدن - هر ۱۰ دقیقه
+cron.schedule('*/10 * * * *', async () => {
+    try {
+        const baseUrl = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
+        const response = await fetch(baseUrl);
+        console.log('🔄 Keeping alive...');
+    } catch (error) {
+        console.log('❌ Keep-alive failed:', error.message);
+    }
+});
 
 // هندل کردن خطاها
 process.on('unhandledRejection', (error) => {
