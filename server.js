@@ -473,61 +473,64 @@ class WordGameBot {
         }
     }
 
-    async joinMultiplayerGame(chatId, userId, firstName, gameId) {
-        try {
-            const game = this.activeMultiplayerGames.get(gameId);
-            
-            if (!game) {
-                await bot.sendMessage(chatId, '❌ بازی مورد نظر یافت نشد.');
-                return;
-            }
+		async joinMultiplayerGame(chatId, userId, firstName, gameId) {
+		try {
+			const game = this.activeMultiplayerGames.get(gameId);
+			
+			if (!game) {
+				await bot.sendMessage(chatId, '❌ بازی مورد نظر یافت نشد.');
+				return;
+			}
 
-            if (game.creatorid === userId) {
-                await bot.sendMessage(chatId, '❌ نمی‌توانید به بازی خودتان بپیوندید.');
-                return;
-            }
+			if (game.creatorid === userId) {
+				await bot.sendMessage(chatId, '❌ نمی‌توانید به بازی خودتان بپیوندید.');
+				return;
+			}
 
-            if (game.status !== 'waiting') {
-                await bot.sendMessage(chatId, '❌ این بازی قبلاً شروع شده است.');
-                return;
-            }
+			if (game.status !== 'waiting') {
+				await bot.sendMessage(chatId, '❌ این بازی قبلاً شروع شده است.');
+				return;
+			}
 
-            await this.db.query(
-                'UPDATE multiplayer_games SET opponentId = $1, status = $2 WHERE gameId = $3',
-                [userId, 'active', gameId]
-            );
+			await this.db.query(
+				'UPDATE multiplayer_games SET opponentId = $1, status = $2, attempts = 0 WHERE gameId = $3',
+				[userId, 'active', gameId]
+			);
 
-            game.opponentid = userId;
-            game.status = 'active';
-            this.activeMultiplayerGames.set(gameId, game);
-            this.waitingGames.delete(game.creatorid);
+			// آپدیت کش با مقادیر اولیه صحیح
+			game.opponentid = userId;
+			game.status = 'active';
+			game.attempts = 0; // اضافه کردن مقدار اولیه
+			game.guessedletters = '[]'; // اضافه کردن مقدار اولیه
+			this.activeMultiplayerGames.set(gameId, game);
+			this.waitingGames.delete(game.creatorid);
 
-            const creatorMessage = 
-                `🎉 <b>بازیکن دوم پیوست!</b>\n\n` +
-                `👤 <b>بازیکن:</b> ${firstName}\n` +
-                `🆔 <b>کد بازی:</b> <code>${gameId}</code>\n\n` +
-                `📝 لطفاً کلمه مخفی را وارد کنید:`;
+			const creatorMessage = 
+				`🎉 <b>بازیکن دوم پیوست!</b>\n\n` +
+				`👤 <b>بازیکن:</b> ${firstName}\n` +
+				`🆔 <b>کد بازی:</b> <code>${gameId}</code>\n\n` +
+				`📝 لطفاً کلمه مخفی را وارد کنید:`;
 
-            await bot.sendMessage(game.creatorid, creatorMessage, {
-                parse_mode: 'HTML'
-            });
+			await bot.sendMessage(game.creatorid, creatorMessage, {
+				parse_mode: 'HTML'
+			});
 
-            const opponentMessage = 
-                `🎉 <b>شما به بازی پیوستید!</b>\n\n` +
-                `🆔 <b>کد بازی:</b> <code>${gameId}</code>\n` +
-                `⏳ <b>در انتظار:</b> ورود کلمه توسط سازنده بازی\n\n` +
-                `⚡ به زودی بازی شروع می‌شود...`;
+			const opponentMessage = 
+				`🎉 <b>شما به بازی پیوستید!</b>\n\n` +
+				`🆔 <b>کد بازی:</b> <code>${gameId}</code>\n` +
+				`⏳ <b>در انتظار:</b> ورود کلمه توسط سازنده بازی\n\n` +
+				`⚡ به زودی بازی شروع می‌شود...`;
 
-            await bot.sendMessage(chatId, opponentMessage, {
-                parse_mode: 'HTML',
-                ...this.createGameActionsMenu(gameId, false)
-            });
+			await bot.sendMessage(chatId, opponentMessage, {
+				parse_mode: 'HTML',
+				...this.createGameActionsMenu(gameId, false)
+			});
 
-        } catch (error) {
-            this.log(`❌ خطا در پیوستن به بازی: ${error.message}`);
-            await bot.sendMessage(chatId, '❌ خطا در پیوستن به بازی. لطفاً دوباره تلاش کنید.');
-        }
-    }
+		} catch (error) {
+			this.log(`❌ خطا در پیوستن به بازی: ${error.message}`);
+			await bot.sendMessage(chatId, '❌ خطا در پیوستن به بازی. لطفاً دوباره تلاش کنید.');
+		}
+	} // EOF joinMultiplayerGame
 
     async handleWordInput(chatId, userId, text, gameId) {
         try {
@@ -590,157 +593,160 @@ class WordGameBot {
         }
     }
 
-    async handleGuess(chatId, userId, text, gameId) {
-        try {
-            const game = this.activeMultiplayerGames.get(gameId);
-            
-            if (!game || game.opponentid !== userId) {
-                await bot.sendMessage(chatId, '❌ بازی یافت نشد یا شما بازیکن این بازی نیستید.');
-                return;
-            }
+		async handleGuess(chatId, userId, text, gameId) {
+		try {
+			const game = this.activeMultiplayerGames.get(gameId);
+			
+			if (!game || game.opponentid !== userId) {
+				await bot.sendMessage(chatId, '❌ بازی یافت نشد یا شما بازیکن این بازی نیستید.');
+				return;
+			}
 
-            if (game.status !== 'active') {
-                await bot.sendMessage(chatId, '❌ این بازی فعال نیست.');
-                return;
-            }
+			if (game.status !== 'active') {
+				await bot.sendMessage(chatId, '❌ این بازی فعال نیست.');
+				return;
+			}
 
-            if (!game.word) {
-                await bot.sendMessage(chatId, '❌ کلمه هنوز توسط سازنده تنظیم نشده است.');
-                return;
-            }
+			if (!game.word) {
+				await bot.sendMessage(chatId, '❌ کلمه هنوز توسط سازنده تنظیم نشده است.');
+				return;
+			}
 
-            const guess = text.trim().toLowerCase();
-            
-            if (guess.length !== 1 || !/^[آ-یa-z]$/.test(guess)) {
-                await bot.sendMessage(chatId, '❌ لطفاً فقط یک حرف فارسی یا انگلیسی وارد کنید.');
-                return;
-            }
+			const guess = text.trim().toLowerCase();
+			
+			if (guess.length !== 1 || !/^[آ-یa-z]$/.test(guess)) {
+				await bot.sendMessage(chatId, '❌ لطفاً فقط یک حرف فارسی یا انگلیسی وارد کنید.');
+				return;
+			}
 
-            let guessedLetters = [];
-            try {
-                guessedLetters = JSON.parse(game.guessedletters || '[]');
-            } catch (e) {
-                guessedLetters = [];
-            }
+			let guessedLetters = [];
+			try {
+				guessedLetters = JSON.parse(game.guessedletters || '[]');
+			} catch (e) {
+				guessedLetters = [];
+			}
 
-            if (guessedLetters.includes(guess)) {
-                await bot.sendMessage(chatId, '❌ این حرف قبلاً حدس زده شده است.');
-                return;
-            }
+			if (guessedLetters.includes(guess)) {
+				await bot.sendMessage(chatId, '❌ این حرف قبلاً حدس زده شده است.');
+				return;
+			}
 
-            guessedLetters.push(guess);
-            const guessedLettersStr = JSON.stringify(guessedLetters);
+			guessedLetters.push(guess);
+			const guessedLettersStr = JSON.stringify(guessedLetters);
 
-            const word = game.word;
-            let currentWordState = game.currentwordstate || '_'.repeat(word.length);
-            let correctGuess = false;
+			const word = game.word;
+			let currentWordState = game.currentwordstate || '_'.repeat(word.length);
+			let correctGuess = false;
 
-            let newWordState = '';
-            for (let i = 0; i < word.length; i++) {
-                if (word[i] === guess || currentWordState[i] !== '_') {
-                    newWordState += word[i];
-                    if (word[i] === guess) correctGuess = true;
-                } else {
-                    newWordState += '_';
-                }
-            }
+			let newWordState = '';
+			for (let i = 0; i < word.length; i++) {
+				if (word[i] === guess || currentWordState[i] !== '_') {
+					newWordState += word[i];
+					if (word[i] === guess) correctGuess = true;
+				} else {
+					newWordState += '_';
+				}
+			}
 
-            const newAttempts = game.attempts + 1;
-            let newStatus = game.status;
+			// تصحیح: مقداردهی اولیه attempts اگر undefined باشد
+			const currentAttempts = game.attempts || 0;
+			const newAttempts = currentAttempts + 1;
+			let newStatus = game.status;
 
-            if (newWordState === word) {
-                newStatus = 'completed';
-                await this.db.query(
-                    'UPDATE multiplayer_games SET winnerId = $1, opponentScore = 100, status = $2 WHERE gameId = $3',
-                    [userId, 'completed', gameId]
-                );
-                
-                await this.updateUserStats(userId, 100);
-                await this.db.query(
-                    'UPDATE users SET multiplayerWins = multiplayerWins + 1 WHERE userId = $1',
-                    [userId]
-                );
-            } else if (newAttempts >= 6) {
-                newStatus = 'completed';
-                await this.db.query(
-                    'UPDATE multiplayer_games SET winnerId = $1, creatorScore = 50, status = $2 WHERE gameId = $3',
-                    [game.creatorid, 'completed', gameId]
-                );
-                
-                await this.updateUserStats(game.creatorid, 50);
-            }
+			if (newWordState === word) {
+				newStatus = 'completed';
+				await this.db.query(
+					'UPDATE multiplayer_games SET winnerId = $1, opponentScore = 100, status = $2 WHERE gameId = $3',
+					[userId, 'completed', gameId]
+				);
+				
+				await this.updateUserStats(userId, 100);
+				await this.db.query(
+					'UPDATE users SET multiplayerWins = multiplayerWins + 1 WHERE userId = $1',
+					[userId]
+				);
+			} else if (newAttempts >= 6) {
+				newStatus = 'completed';
+				await this.db.query(
+					'UPDATE multiplayer_games SET winnerId = $1, creatorScore = 50, status = $2 WHERE gameId = $3',
+					[game.creatorid, 'completed', gameId]
+				);
+				
+				await this.updateUserStats(game.creatorid, 50);
+			}
 
-            await this.db.query(
-                `UPDATE multiplayer_games SET 
-                 attempts = $1, 
-                 guessedLetters = $2,
-                 currentWordState = $3,
-                 status = $4
-                 WHERE gameId = $5`,
-                [newAttempts, guessedLettersStr, newWordState, newStatus, gameId]
-            );
+			await this.db.query(
+				`UPDATE multiplayer_games SET 
+				 attempts = $1, 
+				 guessedLetters = $2,
+				 currentWordState = $3,
+				 status = $4
+				 WHERE gameId = $5`,
+				[newAttempts, guessedLettersStr, newWordState, newStatus, gameId]
+			);
 
-            game.attempts = newAttempts;
-            game.guessedletters = guessedLettersStr;
-            game.currentwordstate = newWordState;
-            game.status = newStatus;
-            this.activeMultiplayerGames.set(gameId, game);
+			// آپدیت کش با مقادیر صحیح
+			game.attempts = newAttempts;
+			game.guessedletters = guessedLettersStr;
+			game.currentwordstate = newWordState;
+			game.status = newStatus;
+			this.activeMultiplayerGames.set(gameId, game);
 
-            let displayWord = '';
-            for (let char of newWordState) {
-                displayWord += char === '_' ? '⬜' : char;
-            }
+			let displayWord = '';
+			for (let char of newWordState) {
+				displayWord += char === '_' ? '⬜' : char;
+			}
 
-            let message = `🎯 <b>حدس شما:</b> ${guess}\n\n`;
-            message += `📝 <b>کلمه:</b> ${displayWord}\n`;
-            message += `🔤 <b>حروف حدس زده:</b> ${guessedLetters.join(', ')}\n`;
-            message += `🎮 <b>فرصت‌های باقی‌مانده:</b> ${6 - newAttempts}\n\n`;
+			let message = `🎯 <b>حدس شما:</b> ${guess}\n\n`;
+			message += `📝 <b>کلمه:</b> ${displayWord}\n`;
+			message += `🔤 <b>حروف حدس زده:</b> ${guessedLetters.join(', ')}\n`;
+			message += `🎮 <b>فرصت‌های باقی‌مانده:</b> ${6 - newAttempts}\n\n`;
 
-            if (correctGuess) {
-                message += `✅ <b>حرف صحیح بود!</b>\n`;
-            } else {
-                message += `❌ <b>حرف در کلمه وجود ندارد</b>\n`;
-            }
+			if (correctGuess) {
+				message += `✅ <b>حرف صحیح بود!</b>\n`;
+			} else {
+				message += `❌ <b>حرف در کلمه وجود ندارد</b>\n`;
+			}
 
-            if (newStatus === 'completed') {
-                if (newWordState === word) {
-                    message += `\n🎉 <b>تبریک! شما برنده شدید!</b>\n🏆 ۱۰۰ امتیاز دریافت کردید`;
-                    
-                    await bot.sendMessage(game.creatorid,
-                        `❌ <b>بازی پایان یافت</b>\n\n` +
-                        `📝 <b>کلمه:</b> ${word}\n` +
-                        `🏆 <b>برنده:</b> بازیکن دوم\n` +
-                        `🎯 <b>امتیاز شما:</b> ۰\n\n` +
-                        `💡 دفعه بعد سعی کنید کلمه سخت‌تری انتخاب کنید!`,
-                        { parse_mode: 'HTML' }
-                    );
-                } else {
-                    message += `\n❌ <b>شما باختید!</b>\n\n` +
-                              `📝 <b>کلمه صحیح:</b> ${word}\n` +
-                              `💡 دفعه بعد شانس بیشتری داشته باشید!`;
-                              
-                    await bot.sendMessage(game.creatorid,
-                        `🎉 <b>شما برنده شدید!</b>\n\n` +
-                        `📝 <b>کلمه:</b> ${word}\n` +
-                        `🏆 <b>برنده:</b> شما\n` +
-                        `🎯 <b>امتیاز شما:</b> ۵۰\n\n` +
-                        `✅ کلمه خوبی انتخاب کرده بودید!`,
-                        { parse_mode: 'HTML' }
-                    );
-                }
-                
-                this.activeMultiplayerGames.delete(gameId);
-            }
+			if (newStatus === 'completed') {
+				if (newWordState === word) {
+					message += `\n🎉 <b>تبریک! شما برنده شدید!</b>\n🏆 ۱۰۰ امتیاز دریافت کردید`;
+					
+					await bot.sendMessage(game.creatorid,
+						`❌ <b>بازی پایان یافت</b>\n\n` +
+						`📝 <b>کلمه:</b> ${word}\n` +
+						`🏆 <b>برنده:</b> بازیکن دوم\n` +
+						`🎯 <b>امتیاز شما:</b> ۰\n\n` +
+						`💡 دفعه بعد سعی کنید کلمه سخت‌تری انتخاب کنید!`,
+						{ parse_mode: 'HTML' }
+					);
+				} else {
+					message += `\n❌ <b>شما باختید!</b>\n\n` +
+							  `📝 <b>کلمه صحیح:</b> ${word}\n` +
+							  `💡 دفعه بعد شانس بیشتری داشته باشید!`;
+							  
+					await bot.sendMessage(game.creatorid,
+						`🎉 <b>شما برنده شدید!</b>\n\n` +
+						`📝 <b>کلمه:</b> ${word}\n` +
+						`🏆 <b>برنده:</b> شما\n` +
+						`🎯 <b>امتیاز شما:</b> ۵۰\n\n` +
+						`✅ کلمه خوبی انتخاب کرده بودید!`,
+						{ parse_mode: 'HTML' }
+					);
+				}
+				
+				this.activeMultiplayerGames.delete(gameId);
+			}
 
-            await bot.sendMessage(chatId, message, {
-                parse_mode: 'HTML'
-            });
+			await bot.sendMessage(chatId, message, {
+				parse_mode: 'HTML'
+			});
 
-        } catch (error) {
-            this.log(`❌ خطا در پردازش حدس: ${error.message}`);
-            await bot.sendMessage(chatId, '❌ خطا در پردازش حدس. لطفاً دوباره تلاش کنید.');
-        }
-    }
+		} catch (error) {
+			this.log(`❌ خطا در پردازش حدس: ${error.message}`);
+			await bot.sendMessage(chatId, '❌ خطا در پردازش حدس. لطفاً دوباره تلاش کنید.');
+		}
+	} // EOF Handle Guess
 
     async cancelMultiplayerGame(gameId, reason = 'بازی لغو شد') {
         try {
