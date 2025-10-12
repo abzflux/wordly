@@ -1,11 +1,11 @@
 services:
   - type: web
     name: telegram-word-bot
-    env: php
+    env: node
     plan: free
     region: frankfurt
-    buildCommand: ""
-    startCommand: php -S 0.0.0.0:$PORT index.php
+    buildCommand: yarn install
+    startCommand: node server.js
     envVars:
       - key: BOT_TOKEN
         value: 8408419647:AAFivpMKAKSGoIWI0Qq8PJ_zrdhQK9wlJFo
