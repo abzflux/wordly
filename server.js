@@ -58,6 +58,7 @@ class WordGameBot {
             this.log('✅ متصل به دیتابیس');
             
             await this.createTables();
+            await this.alterTables(); // اضافه کردن ستون‌های جدید
             await this.loadActiveGames();
             
         } catch (error) {
@@ -88,19 +89,17 @@ class WordGameBot {
                 CREATE TABLE IF NOT EXISTS multiplayer_games (
                     gameid VARCHAR(10) PRIMARY KEY,
                     creatorid BIGINT NOT NULL,
-                    creatorname VARCHAR(255),
                     opponentid BIGINT,
-                    opponentname VARCHAR(255),
                     word VARCHAR(255),
-                    worddisplay VARCHAR(255),
-                    guessedletters JSONB DEFAULT '[]',
-                    attemptsleft INTEGER DEFAULT 6,
+                    wordlength INTEGER DEFAULT 0,
+                    currentwordstate VARCHAR(255),
+                    guessedletters TEXT DEFAULT '[]',
+                    attempts INTEGER DEFAULT 0,
                     maxattempts INTEGER DEFAULT 6,
-                    hintsusedcreator INTEGER DEFAULT 0,
-                    hintsusedopponent INTEGER DEFAULT 0,
+                    hintsused INTEGER DEFAULT 0,
                     maxhints INTEGER DEFAULT 2,
                     status VARCHAR(20) DEFAULT 'waiting',
-                    currentturn VARCHAR(20) DEFAULT 'creator',
+                    winnerid BIGINT,
                     creatorscore INTEGER DEFAULT 0,
                     opponentscore INTEGER DEFAULT 0,
                     createdat TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -111,6 +110,50 @@ class WordGameBot {
             this.log('✅ جداول دیتابیس آماده');
         } catch (error) {
             this.log(`❌ خطا در ایجاد جداول: ${error.message}`);
+        }
+    }
+
+    async alterTables() {
+        try {
+            // اضافه کردن ستون‌های جدید به جدول multiplayer_games
+            const alterQueries = [
+                // اضافه کردن ستون creatorname
+                `ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS creatorname VARCHAR(255)`,
+                
+                // اضافه کردن ستون opponentname
+                `ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS opponentname VARCHAR(255)`,
+                
+                // اضافه کردن ستون worddisplay
+                `ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS worddisplay VARCHAR(255)`,
+                
+                // اضافه کردن ستون attemptsleft
+                `ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS attemptsleft INTEGER DEFAULT 6`,
+                
+                // اضافه کردن ستون hintsusedcreator
+                `ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS hintsusedcreator INTEGER DEFAULT 0`,
+                
+                // اضافه کردن ستون hintsusedopponent
+                `ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS hintsusedopponent INTEGER DEFAULT 0`,
+                
+                // اضافه کردن ستون currentturn
+                `ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS currentturn VARCHAR(20) DEFAULT 'creator'`
+            ];
+
+            for (const query of alterQueries) {
+                try {
+                    await this.db.query(query);
+                    this.log(`✅ اجرای دستور: ${query}`);
+                } catch (error) {
+                    // اگر ستون از قبل وجود داشته باشد، این خطا طبیعی است
+                    if (!error.message.includes('already exists')) {
+                        this.log(`⚠️ خطا در اجرای دستور: ${query} - ${error.message}`);
+                    }
+                }
+            }
+
+            this.log('✅ ستون‌های جدید به جدول اضافه شدند');
+        } catch (error) {
+            this.log(`❌ خطا در اضافه کردن ستون‌ها: ${error.message}`);
         }
     }
 
@@ -514,9 +557,9 @@ class WordGameBot {
                     opponentId: row.opponentid,
                     opponentName: row.opponentname,
                     word: row.word,
-                    wordDisplay: row.worddisplay,
-                    guessedLetters: row.guessedletters || [],
-                    attemptsLeft: row.attemptsleft || 6,
+                    wordDisplay: row.worddisplay || row.currentwordstate,
+                    guessedLetters: Array.isArray(row.guessedletters) ? row.guessedletters : JSON.parse(row.guessedletters || '[]'),
+                    attemptsLeft: row.attemptsleft || (6 - (row.attempts || 0)),
                     maxAttempts: row.maxattempts || 6,
                     hintsUsedCreator: row.hintsusedcreator || 0,
                     hintsUsedOpponent: row.hintsusedopponent || 0,
@@ -645,9 +688,9 @@ class WordGameBot {
                         opponentId: row.opponentid,
                         opponentName: row.opponentname,
                         word: row.word,
-                        wordDisplay: row.worddisplay,
-                        guessedLetters: row.guessedletters || [],
-                        attemptsLeft: row.attemptsleft || 6,
+                        wordDisplay: row.worddisplay || row.currentwordstate,
+                        guessedLetters: Array.isArray(row.guessedletters) ? row.guessedletters : JSON.parse(row.guessedletters || '[]'),
+                        attemptsLeft: row.attemptsleft || (6 - (row.attempts || 0)),
                         maxAttempts: row.maxattempts || 6,
                         hintsUsedCreator: row.hintsusedcreator || 0,
                         hintsUsedOpponent: row.hintsusedopponent || 0,
@@ -694,6 +737,7 @@ class WordGameBot {
                     `UPDATE multiplayer_games SET 
                      word = $1, 
                      worddisplay = $2,
+                     currentwordstate = $2,
                      status = 'active',
                      currentturn = 'opponent'
                      WHERE gameid = $3`,
@@ -836,6 +880,7 @@ class WordGameBot {
                 await this.db.query(
                     `UPDATE multiplayer_games SET 
                      worddisplay = $1,
+                     currentwordstate = $1,
                      guessedletters = $2,
                      attemptsleft = $3,
                      currentturn = $4,
@@ -861,25 +906,27 @@ class WordGameBot {
                 // اطلاع به بازیکن دیگر
                 if (newStatus === 'active') {
                     const otherPlayerId = newCurrentTurn === 'creator' ? game.creatorId : game.opponentId;
-                    await bot.sendMessage(otherPlayerId,
-                        `🔄 <b>نوبت شماست!</b>\n\n` +
-                        `${userRole === 'creator' ? 'سازنده' : 'حریف'} حرف "${guess}" را حدس زد.\n` +
-                        `نتیجه: ${correct ? '✅ درست' : '❌ نادرست'}\n\n` +
-                        `برای ادامه بازی کلیک کنید:`,
-                        {
-                            parse_mode: 'HTML',
-                            reply_markup: {
-                                inline_keyboard: [[
-                                    { 
-                                        text: '🎮 ادامه بازی', 
-                                        web_app: { 
-                                            url: `${WEB_APP_URL}/game.html?gameId=${gameId}&userId=${otherPlayerId}&role=${newCurrentTurn}` 
-                                        } 
-                                    }
-                                ]]
+                    if (otherPlayerId) {
+                        await bot.sendMessage(otherPlayerId,
+                            `🔄 <b>نوبت شماست!</b>\n\n` +
+                            `${userRole === 'creator' ? 'سازنده' : 'حریف'} حرف "${guess}" را حدس زد.\n` +
+                            `نتیجه: ${correct ? '✅ درست' : '❌ نادرست'}\n\n` +
+                            `برای ادامه بازی کلیک کنید:`,
+                            {
+                                parse_mode: 'HTML',
+                                reply_markup: {
+                                    inline_keyboard: [[
+                                        { 
+                                            text: '🎮 ادامه بازی', 
+                                            web_app: { 
+                                                url: `${WEB_APP_URL}/game.html?gameId=${gameId}&userId=${otherPlayerId}&role=${newCurrentTurn}` 
+                                            } 
+                                        }
+                                    ]]
+                                }
                             }
-                        }
-                    );
+                        );
+                    }
                 }
 
                 // اطلاع پایان بازی
@@ -1012,6 +1059,7 @@ class WordGameBot {
                 await this.db.query(
                     `UPDATE multiplayer_games SET 
                      worddisplay = $1,
+                     currentwordstate = $1,
                      attemptsleft = $2,
                      hintsusedcreator = $3,
                      hintsusedopponent = $4,
