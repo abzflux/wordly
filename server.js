@@ -174,10 +174,6 @@ class WordGameBot {
 		}
 	}
 
-
-
-
-
     async loadActiveGames() {
 			try {
 				const result = await this.db.query(
@@ -678,7 +674,6 @@ class WordGameBot {
 		}
 	}
 
-
     async handleCategorySelection(chatId, userId, category, gameId) {
         try {
             const game = this.activeMultiplayerGames.get(gameId);
@@ -800,7 +795,6 @@ class WordGameBot {
 		}
 	}
 
-
     async handleGuess(chatId, userId, text, gameId) {
         try {
             const game = this.activeMultiplayerGames.get(gameId);
@@ -916,6 +910,24 @@ class WordGameBot {
                 message += `✅ <b>حرف صحیح بود!</b>\n`;
             } else {
                 message += `❌ <b>حرف در کلمه وجود ندارد</b>\n`;
+            }
+
+            // 🔥 **اصلاح مهم: ارسال پیام به سازنده برای نمایش حدس بازیکن دوم**
+            if (game.creatorid) {
+                let creatorMessage = `👤 <b>بازیکن دوم حدس زد:</b> ${guess}\n\n`;
+                creatorMessage += `📝 <b>کلمه:</b> ${displayWord}\n`;
+                creatorMessage += `🔤 <b>حروف حدس زده:</b> ${guessedLetters.join(', ') || 'هیچ'}\n`;
+                creatorMessage += `🎮 <b>فرصت‌های استفاده شده:</b> ${newAttempts}/6\n`;
+                
+                if (correctGuess) {
+                    creatorMessage += `\n✅ <b>حرف صحیح بود!</b>`;
+                } else {
+                    creatorMessage += `\n❌ <b>حرف در کلمه وجود ندارد</b>`;
+                }
+
+                await bot.sendMessage(game.creatorid, creatorMessage, {
+                    parse_mode: 'HTML'
+                });
             }
 
             if (newStatus === 'completed') {
