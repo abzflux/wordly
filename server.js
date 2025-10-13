@@ -463,7 +463,7 @@ class WordGameBot {
 
     async setupWebhook() {
         try {
-            const webhookUrl = `https://${process.env.RENDER_EXTERNAL_HOSTNAME || 'your-app.onrender.com'}/webhook`;
+            const webhookUrl = `https://${process.env.RENDER_EXTERNAL_HOSTNAME || 'word-bot.onrender.com'}/webhook`;
             
             this.log(`🔄 در حال تنظیم وب‌هوک: ${webhookUrl}`);
             
