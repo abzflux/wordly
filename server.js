@@ -119,7 +119,6 @@ class WordGameBot {
 					opponentid BIGINT,
 					word VARCHAR(255),
 					wordlength INTEGER DEFAULT 0,
-					category VARCHAR(100) DEFAULT 'عمومی',
 					hints INTEGER DEFAULT 2,
 					hintsused INTEGER DEFAULT 0,
 					maxattempts INTEGER DEFAULT 6,
@@ -137,10 +136,14 @@ class WordGameBot {
 				)
 			`);
 
-			// اضافه کردن ستون lastactivity اگر وجود نداره
+			// اضافه کردن ستون‌های جدید اگر وجود ندارن
 			await this.db.query(`
 				ALTER TABLE multiplayer_games
 				ADD COLUMN IF NOT EXISTS lastactivity TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+			`);
+			await this.db.query(`
+				ALTER TABLE multiplayer_games
+				ADD COLUMN IF NOT EXISTS category VARCHAR(100) DEFAULT 'عمومی'
 			`);
 
 			// جدول درخواست‌های راهنمایی
@@ -164,12 +167,13 @@ class WordGameBot {
 			await this.db.query(`CREATE INDEX IF NOT EXISTS idx_multiplayer_opponent_v1 ON multiplayer_games(opponentid)`);
 			await this.db.query(`CREATE INDEX IF NOT EXISTS idx_hint_requests_game_v1 ON hint_requests(gameid)`);
 
-			this.log('✅ جداول دیتابیس با موفقیت بررسی و ایجاد شدند');
+			this.log('✅ جداول دیتابیس با موفقیت بررسی و ایجاد شدند (تمام ستون‌ها و تغییرات اضافه شدند)');
 		} catch (error) {
 			this.log(`❌ خطا در ایجاد جداول: ${error.message}`);
 			console.error('Full error:', error);
 		}
 	}
+
 
 
 
