@@ -1,3 +1,6 @@
+import cors from "cors";
+app.use(cors());
+
 const express = require('express');
 const TelegramBot = require('node-telegram-bot-api');
 const { Pool } = require('pg');
