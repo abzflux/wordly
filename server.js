@@ -76,7 +76,7 @@ class WordGameBot {
         try {
             await this.db.query(`
                 CREATE TABLE IF NOT EXISTS users (
-                    user_id BIGINT PRIMARY KEY,
+                    userid BIGINT PRIMARY KEY,
                     first_name VARCHAR(255) NOT NULL,
                     username VARCHAR(255),
                     total_score INTEGER DEFAULT 0,
@@ -126,9 +126,9 @@ class WordGameBot {
             
             // ثبت کاربر
             await this.db.query(`
-                INSERT INTO users (user_id, first_name) 
+                INSERT INTO users (userid, first_name) 
                 VALUES ($1, $2) 
-                ON CONFLICT (user_id) DO NOTHING
+                ON CONFLICT (userid) DO NOTHING
             `, [userId, firstName]);
 
             // ایجاد بازی
@@ -231,9 +231,9 @@ class WordGameBot {
 
             // ثبت کاربر
             await this.db.query(`
-                INSERT INTO users (user_id, first_name) 
+                INSERT INTO users (userid, first_name) 
                 VALUES ($1, $2) 
-                ON CONFLICT (user_id) DO NOTHING
+                ON CONFLICT (userid) DO NOTHING
             `, [userId, firstName]);
 
             // آپدیت بازی
