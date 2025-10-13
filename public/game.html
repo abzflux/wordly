@@ -19,9 +19,11 @@
             --success: #10b981;
             --danger: #ef4444;
             --warning: #f59e0b;
+            --info: #3b82f6;
             --dark: #1f2937;
             --light: #f8fafc;
             --gray: #6b7280;
+            --gray-light: #e5e7eb;
         }
 
         body {
@@ -121,6 +123,61 @@
             font-size: 1.2em;
         }
 
+        /* Loading Spinner */
+        .loading-container {
+            text-align: center;
+            padding: 40px;
+        }
+
+        .spinner {
+            width: 60px;
+            height: 60px;
+            border: 4px solid var(--gray-light);
+            border-top: 4px solid var(--primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .loading-text {
+            font-size: 1.2em;
+            color: var(--gray);
+            margin-bottom: 10px;
+        }
+
+        /* Game Info */
+        .game-info {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+
+        .info-item {
+            background: var(--light);
+            padding: 15px;
+            border-radius: 10px;
+            text-align: center;
+        }
+
+        .info-label {
+            font-size: 0.9em;
+            color: var(--gray);
+            margin-bottom: 5px;
+        }
+
+        .info-value {
+            font-size: 1.2em;
+            font-weight: 600;
+            color: var(--dark);
+        }
+
+        /* Word Display */
         .word-display {
             background: linear-gradient(135deg, #f0f4ff, #e6f7ff);
             border-radius: 15px;
@@ -167,32 +224,7 @@
             box-shadow: none;
         }
 
-        .game-info {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 15px;
-            margin-bottom: 25px;
-        }
-
-        .info-item {
-            background: var(--light);
-            padding: 15px;
-            border-radius: 10px;
-            text-align: center;
-        }
-
-        .info-label {
-            font-size: 0.9em;
-            color: var(--gray);
-            margin-bottom: 5px;
-        }
-
-        .info-value {
-            font-size: 1.2em;
-            font-weight: 600;
-            color: var(--dark);
-        }
-
+        /* Guessed Letters */
         .guessed-letters {
             background: var(--light);
             border-radius: 10px;
@@ -233,6 +265,7 @@
             border-color: var(--danger);
         }
 
+        /* Input Sections */
         .input-section {
             margin-top: 25px;
         }
@@ -240,7 +273,7 @@
         .guess-input {
             width: 100%;
             padding: 15px 20px;
-            border: 2px solid #e5e7eb;
+            border: 2px solid var(--gray-light);
             border-radius: 12px;
             font-size: 1.1em;
             text-align: center;
@@ -254,6 +287,7 @@
             box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
         }
 
+        /* Buttons */
         .btn {
             padding: 15px 30px;
             border: none;
@@ -268,12 +302,18 @@
             gap: 8px;
         }
 
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none !important;
+        }
+
         .btn-primary {
             background: var(--primary);
             color: white;
         }
 
-        .btn-primary:hover {
+        .btn-primary:hover:not(:disabled) {
             background: var(--primary-dark);
             transform: translateY(-2px);
             box-shadow: 0 8px 20px rgba(102, 126, 234, 0.3);
@@ -294,27 +334,16 @@
             color: white;
         }
 
+        .btn-info {
+            background: var(--info);
+            color: white;
+        }
+
         .btn-full {
             width: 100%;
         }
 
-        .hint-section {
-            background: linear-gradient(135deg, #fff3cd, #ffeaa7);
-            border: 1px solid #ffd43b;
-            border-radius: 12px;
-            padding: 20px;
-            margin-top: 20px;
-        }
-
-        .hint-title {
-            font-size: 1.1em;
-            margin-bottom: 10px;
-            color: #856404;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
+        /* Players Section */
         .players-section {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -359,6 +388,14 @@
             color: var(--gray);
         }
 
+        .player-score {
+            font-size: 1.1em;
+            font-weight: bold;
+            color: var(--primary);
+            margin-top: 5px;
+        }
+
+        /* Chat Container */
         .chat-container {
             background: var(--light);
             border-radius: 12px;
@@ -372,12 +409,14 @@
             margin-bottom: 10px;
             border-radius: 10px;
             font-size: 0.95em;
+            line-height: 1.4;
         }
 
         .message.system {
             background: #e3f2fd;
             color: #1565c0;
             text-align: center;
+            border-left: 4px solid var(--info);
         }
 
         .message.guess {
@@ -390,21 +429,89 @@
             border-left: 4px solid var(--warning);
         }
 
-        .loading {
-            display: inline-block;
-            width: 20px;
-            height: 20px;
-            border: 3px solid #f3f3f3;
-            border-top: 3px solid var(--primary);
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
+        .message.success {
+            background: #d1fae5;
+            color: #065f46;
+            border-left: 4px solid var(--success);
         }
 
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
+        .message.error {
+            background: #fee2e2;
+            color: #dc2626;
+            border-left: 4px solid var(--danger);
         }
 
+        /* Category Selection */
+        .category-buttons {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        /* Hint Section */
+        .hint-section {
+            background: linear-gradient(135deg, #fff3cd, #ffeaa7);
+            border: 1px solid #ffd43b;
+            border-radius: 12px;
+            padding: 20px;
+            margin-top: 20px;
+        }
+
+        .hint-title {
+            font-size: 1.1em;
+            margin-bottom: 10px;
+            color: #856404;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        /* Game Phase */
+        .game-phase {
+            text-align: center;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            font-size: 1.1em;
+            font-weight: 600;
+        }
+
+        /* Notification */
+        .notification {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: white;
+            padding: 15px 25px;
+            border-radius: 10px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            border-left: 4px solid var(--success);
+            z-index: 1000;
+            transform: translateX(400px);
+            transition: transform 0.3s ease;
+            max-width: 400px;
+        }
+
+        .notification.show {
+            transform: translateX(0);
+        }
+
+        .notification.error {
+            border-left-color: var(--danger);
+        }
+
+        .notification.warning {
+            border-left-color: var(--warning);
+        }
+
+        .notification.info {
+            border-left-color: var(--info);
+        }
+
+        /* Utility Classes */
         .hidden {
             display: none !important;
         }
@@ -428,42 +535,49 @@
             100% { transform: scale(1); }
         }
 
-        .notification {
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            background: white;
-            padding: 15px 25px;
-            border-radius: 10px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-            border-left: 4px solid var(--success);
-            z-index: 1000;
-            transform: translateX(400px);
-            transition: transform 0.3s ease;
+        .shake {
+            animation: shake 0.5s ease-in-out;
         }
 
-        .notification.show {
-            transform: translateX(0);
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-5px); }
+            75% { transform: translateX(5px); }
         }
 
-        .notification.error {
-            border-left-color: var(--danger);
-        }
-
-        .game-phase {
-            text-align: center;
-            padding: 20px;
-            background: linear-gradient(135deg, #667eea, #764ba2);
+        /* Code Display */
+        .code-display {
+            background: var(--dark);
             color: white;
+            padding: 15px;
             border-radius: 10px;
-            margin-bottom: 20px;
+            font-family: monospace;
+            font-size: 1.3em;
+            text-align: center;
+            margin: 15px 0;
+            direction: ltr;
+            letter-spacing: 2px;
         }
 
-        .category-buttons {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px;
-            margin-top: 20px;
+        /* Waiting Section */
+        .waiting-section {
+            text-align: center;
+            padding: 30px;
+            background: var(--light);
+            border-radius: 15px;
+            margin: 20px 0;
+        }
+
+        .waiting-icon {
+            font-size: 3em;
+            margin-bottom: 15px;
+            animation: bounce 2s infinite;
+        }
+
+        @keyframes bounce {
+            0%, 20%, 50%, 80%, 100% { transform: translateY(0); }
+            40% { transform: translateY(-10px); }
+            60% { transform: translateY(-5px); }
         }
     </style>
 </head>
@@ -480,51 +594,99 @@
                 <div class="panel">
                     <h2 class="panel-title">📊 وضعیت بازی</h2>
                     
-                    <div id="gamePhase" class="game-phase">
-                        در حال بارگذاری...
+                    <!-- Loading State -->
+                    <div id="loadingSection" class="loading-container">
+                        <div class="spinner"></div>
+                        <div class="loading-text" id="loadingText">در حال بارگذاری بازی...</div>
+                        <div class="code-display" id="loadingGameCode"></div>
                     </div>
 
-                    <div class="word-display">
-                        <div class="word-letters" id="wordLetters">
-                            <!-- حروف کلمه اینجا نمایش داده می‌شوند -->
+                    <!-- Game Phase -->
+                    <div id="gamePhase" class="game-phase hidden">
+                        <!-- وضعیت بازی اینجا نمایش داده می‌شود -->
+                    </div>
+
+                    <!-- Waiting for Player -->
+                    <div id="waitingSection" class="waiting-section hidden">
+                        <div class="waiting-icon">⏳</div>
+                        <h3>در انتظار بازیکن دوم</h3>
+                        <p>کد بازی خود را به دوستتان بدهید:</p>
+                        <div class="code-display" id="waitingGameCode"></div>
+                        <p>یا از دوستتان بخواهید با دستور زیر پیوست شود:</p>
+                        <div class="code-display">/join <span id="joinCommandCode"></span></div>
+                    </div>
+
+                    <!-- Active Game -->
+                    <div id="activeGameSection" class="hidden">
+                        <div class="word-display">
+                            <div class="word-letters" id="wordLetters">
+                                <!-- حروف کلمه اینجا نمایش داده می‌شوند -->
+                            </div>
+                            <div class="game-info">
+                                <div class="info-item">
+                                    <div class="info-label">دسته‌بندی</div>
+                                    <div class="info-value" id="categoryValue">-</div>
+                                </div>
+                                <div class="info-item">
+                                    <div class="info-label">تعداد حروف</div>
+                                    <div class="info-value" id="wordLengthValue">-</div>
+                                </div>
+                                <div class="info-item">
+                                    <div class="info-label">فرصت‌های باقی‌مانده</div>
+                                    <div class="info-value" id="attemptsLeftValue">۶</div>
+                                </div>
+                                <div class="info-item">
+                                    <div class="info-label">راهنمایی باقی‌مانده</div>
+                                    <div class="info-value" id="hintsLeftValue">۲</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="guessed-letters">
+                            <div class="guessed-title">حروف حدس زده شده:</div>
+                            <div class="letters-container" id="guessedLettersContainer">
+                                <!-- حروف حدس زده شده اینجا نمایش داده می‌شوند -->
+                            </div>
+                        </div>
+
+                        <div class="players-section">
+                            <div class="player-card" id="creatorCard">
+                                <div class="player-avatar">👤</div>
+                                <div class="player-name" id="creatorName">سازنده</div>
+                                <div class="player-role">سازنده بازی</div>
+                                <div class="player-score" id="creatorScore">۰ امتیاز</div>
+                            </div>
+                            <div class="player-card" id="opponentCard">
+                                <div class="player-avatar">👤</div>
+                                <div class="player-name" id="opponentName">بازیکن</div>
+                                <div class="player-role">حدس‌زننده</div>
+                                <div class="player-score" id="opponentScore">۰ امتیاز</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Game Ended -->
+                    <div id="endedGameSection" class="hidden">
+                        <div class="word-display">
+                            <div class="word-letters" id="endedWordLetters"></div>
                         </div>
                         <div class="game-info">
                             <div class="info-item">
-                                <div class="info-label">دسته‌بندی</div>
-                                <div class="info-value" id="categoryValue">-</div>
+                                <div class="info-label">نتیجه بازی</div>
+                                <div class="info-value" id="gameResultValue">-</div>
                             </div>
                             <div class="info-item">
-                                <div class="info-label">تعداد حروف</div>
-                                <div class="info-value" id="wordLengthValue">-</div>
+                                <div class="info-label">کلمه صحیح</div>
+                                <div class="info-value" id="correctWordValue">-</div>
                             </div>
                             <div class="info-item">
-                                <div class="info-label">فرصت‌های باقی‌مانده</div>
-                                <div class="info-value" id="attemptsLeftValue">۶</div>
+                                <div class="info-label">تعداد حدس‌ها</div>
+                                <div class="info-value" id="totalAttemptsValue">-</div>
                             </div>
                             <div class="info-item">
-                                <div class="info-label">راهنمایی باقی‌مانده</div>
-                                <div class="info-value" id="hintsLeftValue">۲</div>
+                                <div class="info-label">امتیاز کسب شده</div>
+                                <div class="info-value" id="earnedScoreValue">-</div>
                             </div>
-                        </div>
-                    </div>
-
-                    <div class="guessed-letters">
-                        <div class="guessed-title">حروف حدس زده شده:</div>
-                        <div class="letters-container" id="guessedLettersContainer">
-                            <!-- حروف حدس زده شده اینجا نمایش داده می‌شوند -->
-                        </div>
-                    </div>
-
-                    <div class="players-section">
-                        <div class="player-card" id="creatorCard">
-                            <div class="player-avatar">👤</div>
-                            <div class="player-name" id="creatorName">سازنده</div>
-                            <div class="player-role">سازنده بازی</div>
-                        </div>
-                        <div class="player-card" id="opponentCard">
-                            <div class="player-avatar">👤</div>
-                            <div class="player-name" id="opponentName">بازیکن</div>
-                            <div class="player-role">حدس‌زننده</div>
                         </div>
                     </div>
                 </div>
@@ -533,6 +695,36 @@
                 <div class="panel">
                     <h2 class="panel-title">🎯 کنترل بازی</h2>
                     
+                    <!-- بخش انتخاب دسته‌بندی -->
+                    <div id="categorySection" class="hidden">
+                        <div style="text-align: center; margin-bottom: 20px;">
+                            <p>لطفاً دسته‌بندی کلمه را انتخاب کنید:</p>
+                        </div>
+                        <div class="category-buttons">
+                            <button onclick="selectCategory('میوه')" class="btn btn-primary">🍎 میوه</button>
+                            <button onclick="selectCategory('حیوانات')" class="btn btn-primary">🐘 حیوانات</button>
+                            <button onclick="selectCategory('شهرها')" class="btn btn-primary">🏙️ شهرها</button>
+                            <button onclick="selectCategory('کشورها')" class="btn btn-primary">🌍 کشورها</button>
+                            <button onclick="selectCategory('غذاها')" class="btn btn-primary">🍕 غذاها</button>
+                            <button onclick="selectCategory('اشیا')" class="btn btn-primary">📦 اشیا</button>
+                        </div>
+                    </div>
+
+                    <!-- بخش ورودی کلمه (برای سازنده) -->
+                    <div id="wordInputSection" class="hidden">
+                        <div class="input-section">
+                            <input type="text" 
+                                   id="wordInput" 
+                                   class="guess-input" 
+                                   placeholder="کلمه مخفی را وارد کنید (۳-۱۵ حرف)..."
+                                   autocomplete="off"
+                                   maxlength="15">
+                            <button onclick="submitWord()" class="btn btn-success btn-full">
+                                ✅ ثبت کلمه مخفی
+                            </button>
+                        </div>
+                    </div>
+
                     <!-- بخش ورودی حدس (برای بازیکن دوم) -->
                     <div id="guessSection" class="hidden">
                         <div class="input-section">
@@ -557,35 +749,6 @@
                         </div>
                     </div>
 
-                    <!-- بخش ورودی کلمه (برای سازنده) -->
-                    <div id="wordInputSection" class="hidden">
-                        <div class="input-section">
-                            <input type="text" 
-                                   id="wordInput" 
-                                   class="guess-input" 
-                                   placeholder="کلمه مخفی را وارد کنید (۳-۱۵ حرف)..."
-                                   autocomplete="off">
-                            <button onclick="submitWord()" class="btn btn-success btn-full">
-                                ✅ ثبت کلمه مخفی
-                            </button>
-                        </div>
-                    </div>
-
-                    <!-- بخش انتخاب دسته‌بندی -->
-                    <div id="categorySection" class="hidden">
-                        <div style="text-align: center; margin-bottom: 20px;">
-                            <p>لطفاً دسته‌بندی کلمه را انتخاب کنید:</p>
-                        </div>
-                        <div class="category-buttons">
-                            <button onclick="selectCategory('میوه')" class="btn btn-primary">🍎 میوه</button>
-                            <button onclick="selectCategory('حیوانات')" class="btn btn-primary">🐘 حیوانات</button>
-                            <button onclick="selectCategory('شهرها')" class="btn btn-primary">🏙️ شهرها</button>
-                            <button onclick="selectCategory('کشورها')" class="btn btn-primary">🌍 کشورها</button>
-                            <button onclick="selectCategory('غذاها')" class="btn btn-primary">🍕 غذاها</button>
-                            <button onclick="selectCategory('اشیا')" class="btn btn-primary">📦 اشیا</button>
-                        </div>
-                    </div>
-
                     <!-- بخش چت و رویدادها -->
                     <div style="margin-top: 30px;">
                         <h3 class="panel-title">💬 رویدادهای بازی</h3>
@@ -597,12 +760,18 @@
                     </div>
 
                     <!-- دکمه‌های کنترلی -->
-                    <div style="margin-top: 20px; display: flex; gap: 10px;">
-                        <button onclick="updateGameStatus()" class="btn btn-primary">
+                    <div style="margin-top: 20px; display: flex; gap: 10px; flex-wrap: wrap;">
+                        <button onclick="refreshGame()" class="btn btn-info">
                             🔄 بروزرسانی وضعیت
+                        </button>
+                        <button onclick="copyGameCode()" class="btn btn-primary">
+                            📋 کپی کد بازی
                         </button>
                         <button onclick="leaveGame()" class="btn btn-danger">
                             🚪 خروج از بازی
+                        </button>
+                        <button onclick="newGame()" class="btn btn-success hidden" id="newGameBtn">
+                            🎮 بازی جدید
                         </button>
                     </div>
                 </div>
@@ -619,8 +788,11 @@
             userId: null,
             userRole: null,
             gameData: null,
-            ws: null
+            refreshInterval: null
         };
+
+        // ثابت‌ها
+        const REFRESH_INTERVAL = 3000; // 3 ثانیه
 
         // بارگذاری اولیه بازی
         document.addEventListener('DOMContentLoaded', function() {
@@ -636,212 +808,190 @@
             gameState.userRole = urlParams.get('role');
             
             if (!gameState.gameId || !gameState.userId || !gameState.userRole) {
-                showNotification('❌ اطلاعات بازی ناقص است', true);
-                setTimeout(() => {
-                    window.location.href = '/';
-                }, 2000);
+                showNotification('❌ اطلاعات بازی ناقص است. لطفاً از طریق ربات تلگرام وارد شوید.', true);
                 return;
             }
 
-            // اتصال به WebSocket
-            connectWebSocket();
-            
-            // نمایش رابط کاربری مناسب بر اساس نقش کاربر
-            setupUIForUserRole();
-            
-            addChatMessage('system', `🎮 شما به عنوان ${gameState.userRole === 'creator' ? 'سازنده' : 'بازیکن'} به بازی پیوستید`);
+            // نمایش اطلاعات اولیه
+            document.getElementById('loadingGameCode').textContent = gameState.gameId;
+            document.getElementById('waitingGameCode').textContent = gameState.gameId;
+            document.getElementById('joinCommandCode').textContent = gameState.gameId;
+
+            // شروع بررسی وضعیت بازی
+            startGameMonitoring();
+            addChatMessage('system', '🎮 در حال اتصال به سرور بازی...');
         }
 
-        // اتصال به WebSocket
-        function connectWebSocket() {
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${protocol}//${window.location.host}`;
+        // شروع مانیتورینگ بازی
+        function startGameMonitoring() {
+            // بررسی اولیه
+            checkGameStatus();
             
-            gameState.ws = new WebSocket(wsUrl);
+            // تنظیم بررسی دوره‌ای
+            gameState.refreshInterval = setInterval(checkGameStatus, REFRESH_INTERVAL);
+        }
 
-            gameState.ws.onopen = function() {
-                console.log('🔗 متصل به سرور بازی');
-                showNotification('✅ به سرور بازی متصل شدید');
+        // بررسی وضعیت بازی
+        async function checkGameStatus() {
+            try {
+                const response = await fetch(`/api/game/${gameState.gameId}`);
+                const data = await response.json();
                 
-                // ارسال درخواست پیوستن به بازی
-                gameState.ws.send(JSON.stringify({
-                    type: 'join_game',
-                    gameId: gameState.gameId,
-                    userId: gameState.userId
-                }));
-            };
-
-            gameState.ws.onmessage = function(event) {
-                try {
-                    const message = JSON.parse(event.data);
-                    handleWebSocketMessage(message);
-                } catch (error) {
-                    console.error('❌ خطا در پردازش پیام:', error);
+                if (data.success) {
+                    updateGameUI(data.game);
+                } else {
+                    showNotification('❌ خطا در دریافت وضعیت بازی', true);
                 }
-            };
-
-            gameState.ws.onclose = function() {
-                console.log('🔌 اتصال قطع شد');
-                showNotification('🔌 اتصال به سرور قطع شد', true);
-            };
-
-            gameState.ws.onerror = function(error) {
-                console.error('❌ خطای WebSocket:', error);
+            } catch (error) {
+                console.error('خطا در بررسی وضعیت:', error);
                 showNotification('❌ خطا در اتصال به سرور', true);
-            };
-        }
-
-        // پردازش پیام‌های WebSocket
-        function handleWebSocketMessage(message) {
-            switch (message.type) {
-                case 'game_state':
-                    updateGameDisplay(message.gameData, message.userRole);
-                    break;
-                case 'category_selected':
-                    showNotification(`✅ دسته‌بندی "${message.category}" انتخاب شد`);
-                    addChatMessage('system', `🗂️ دسته‌بندی "${message.category}" انتخاب شد`);
-                    break;
-                case 'word_submitted':
-                    showNotification('✅ کلمه مخفی ثبت شد!');
-                    addChatMessage('system', `🔐 کلمه مخفی ثبت شد (${message.wordLength} حرف)`);
-                    if (gameState.userRole === 'opponent') {
-                        activateGuessSection();
-                    }
-                    break;
-                case 'guess_result':
-                    const resultText = message.correct ? 
-                        `✅ حرف "${message.guess}" صحیح بود!` : 
-                        `❌ حرف "${message.guess}" در کلمه وجود ندارد`;
-                    addChatMessage('guess', resultText);
-                    break;
-                case 'hint_received':
-                    showNotification(`💡 راهنمایی: حرف "${message.letter}"`);
-                    addChatMessage('hint', `💡 راهنمایی: حرف "${message.letter}"`);
-                    break;
-                case 'game_ended':
-                    endGame(message.winner, message.word);
-                    break;
-                case 'error':
-                    showNotification(message.message, true);
-                    break;
             }
         }
 
-        // تنظیم رابط کاربری بر اساس نقش کاربر
-        function setupUIForUserRole() {
-            const guessSection = document.getElementById('guessSection');
-            const wordInputSection = document.getElementById('wordInputSection');
-            const categorySection = document.getElementById('categorySection');
+        // به‌روزرسانی رابط کاربری بر اساس وضعیت بازی
+        function updateGameUI(game) {
+            gameState.gameData = game;
+            
+            // پنهان کردن همه section‌ها
+            hideAllSections();
+            
+            // نمایش section مناسب بر اساس وضعیت
+            switch (game.status) {
+                case 'waiting':
+                    showWaitingState(game);
+                    break;
+                case 'active':
+                    showActiveState(game);
+                    break;
+                case 'completed':
+                    showCompletedState(game);
+                    break;
+                case 'cancelled':
+                    showCancelledState(game);
+                    break;
+                default:
+                    showLoadingState();
+            }
+        }
 
+        // پنهان کردن همه section‌ها
+        function hideAllSections() {
+            document.getElementById('loadingSection').classList.add('hidden');
+            document.getElementById('waitingSection').classList.add('hidden');
+            document.getElementById('activeGameSection').classList.add('hidden');
+            document.getElementById('endedGameSection').classList.add('hidden');
+            document.getElementById('categorySection').classList.add('hidden');
+            document.getElementById('wordInputSection').classList.add('hidden');
+            document.getElementById('guessSection').classList.add('hidden');
+        }
+
+        // نمایش حالت انتظار
+        function showWaitingState(game) {
+            document.getElementById('loadingSection').classList.add('hidden');
+            document.getElementById('waitingSection').classList.remove('hidden');
+            
+            const phaseText = gameState.userRole === 'creator' ? 
+                '⏳ در انتظار بازیکن دوم...' : 
+                '🎮 منتظر شروع بازی توسط سازنده...';
+            
+            updateGamePhase(phaseText);
+            addChatMessage('system', phaseText);
+        }
+
+        // نمایش حالت فعال
+        function showActiveState(game) {
+            document.getElementById('activeGameSection').classList.remove('hidden');
+            
+            // تنظیم بخش‌های مختلف بر اساس نقش کاربر
             if (gameState.userRole === 'creator') {
-                guessSection.classList.add('hidden');
-                wordInputSection.classList.add('hidden');
-                categorySection.classList.remove('hidden');
-                document.getElementById('gamePhase').textContent = '🎮 شما سازنده بازی هستید - لطفاً دسته‌بندی را انتخاب کنید';
-                document.getElementById('creatorCard').classList.add('active');
+                if (!game.category) {
+                    document.getElementById('categorySection').classList.remove('hidden');
+                    updateGamePhase('🗂️ لطفاً دسته‌بندی را انتخاب کنید');
+                } else if (!game.word) {
+                    document.getElementById('wordInputSection').classList.remove('hidden');
+                    updateGamePhase('📝 لطفاً کلمه مخفی را وارد کنید');
+                } else {
+                    updateGamePhase('👀 در حال مشاهده حدس‌های بازیکن...');
+                    updateGameDisplay(game);
+                }
             } else {
-                guessSection.classList.add('hidden');
-                wordInputSection.classList.add('hidden');
-                categorySection.classList.add('hidden');
-                document.getElementById('gamePhase').textContent = '⏳ در انتظار انتخاب دسته‌بندی توسط سازنده...';
-                document.getElementById('opponentCard').classList.add('active');
+                if (game.word) {
+                    document.getElementById('guessSection').classList.remove('hidden');
+                    updateGamePhase('🎯 نوبت شما برای حدس زدن!');
+                    updateGameDisplay(game);
+                } else {
+                    updateGamePhase('⏳ سازنده در حال تنظیم بازی...');
+                }
             }
         }
 
-        // انتخاب دسته‌بندی توسط سازنده
-        function selectCategory(category) {
-            if (gameState.ws && gameState.ws.readyState === WebSocket.OPEN) {
-                gameState.ws.send(JSON.stringify({
-                    type: 'select_category',
-                    gameId: gameState.gameId,
-                    userId: gameState.userId,
-                    data: { category: category }
-                }));
-                
-                document.getElementById('categorySection').classList.add('hidden');
-                document.getElementById('wordInputSection').classList.remove('hidden');
-                document.getElementById('gamePhase').textContent = '📝 لطفاً کلمه مخفی را وارد کنید';
-            }
-        }
-
-        // ثبت کلمه مخفی توسط سازنده
-        function submitWord() {
-            const wordInput = document.getElementById('wordInput');
-            const word = wordInput.value.trim();
+        // نمایش حالت پایان یافته
+        function showCompletedState(game) {
+            document.getElementById('endedGameSection').classList.remove('hidden');
+            document.getElementById('newGameBtn').classList.remove('hidden');
             
-            if (word.length < 3 || word.length > 15) {
-                showNotification('❌ کلمه باید بین ۳ تا ۱۵ حرف باشد', true);
-                return;
-            }
-
-            if (!/^[آ-یa-z\s]+$/.test(word)) {
-                showNotification('❌ کلمه باید شامل حروف فارسی، انگلیسی یا فاصله باشد', true);
-                return;
-            }
-
-            if (gameState.ws && gameState.ws.readyState === WebSocket.OPEN) {
-                gameState.ws.send(JSON.stringify({
-                    type: 'submit_word',
-                    gameId: gameState.gameId,
-                    userId: gameState.userId,
-                    data: { word: word }
-                }));
-                
-                wordInput.value = '';
-            }
-        }
-
-        // فعال کردن بخش حدس برای بازیکن دوم
-        function activateGuessSection() {
-            document.getElementById('guessSection').classList.remove('hidden');
-            document.getElementById('gamePhase').textContent = '🎯 نوبت شما برای حدس زدن!';
-            document.getElementById('guessInput').focus();
-        }
-
-        // ارسال حدس بازیکن دوم
-        function submitGuess() {
-            const guessInput = document.getElementById('guessInput');
-            const guess = guessInput.value.trim().toLowerCase();
+            const isWinner = game.winnerId == gameState.userId;
+            const resultText = isWinner ? '🏆 شما برنده شدید!' : '💔 متأسفانه باختید!';
             
-            if (guess.length !== 1 || !/^[آ-یa-z]$/.test(guess)) {
-                showNotification('❌ لطفاً فقط یک حرف فارسی یا انگلیسی وارد کنید', true);
-                return;
-            }
-
-            if (gameState.ws && gameState.ws.readyState === WebSocket.OPEN) {
-                gameState.ws.send(JSON.stringify({
-                    type: 'submit_guess',
-                    gameId: gameState.gameId,
-                    userId: gameState.userId,
-                    data: { guess: guess }
-                }));
-                
-                guessInput.value = '';
-                guessInput.focus();
-            }
+            updateGamePhase(resultText);
+            updateEndedGameDisplay(game);
+            addChatMessage('system', `🎯 بازی پایان یافت! ${resultText}`);
+            
+            // توقف مانیتورینگ
+            clearInterval(gameState.refreshInterval);
         }
 
-        // درخواست راهنمایی
-        function requestHint() {
-            if (gameState.ws && gameState.ws.readyState === WebSocket.OPEN) {
-                gameState.ws.send(JSON.stringify({
-                    type: 'request_hint',
-                    gameId: gameState.gameId,
-                    userId: gameState.userId
-                }));
-            }
+        // نمایش حالت لغو شده
+        function showCancelledState(game) {
+            updateGamePhase('❌ بازی لغو شد');
+            addChatMessage('system', '❌ بازی توسط سیستم لغو شد');
+            showNotification('❌ بازی لغو شد', true);
+            
+            // توقف مانیتورینگ
+            clearInterval(gameState.refreshInterval);
+        }
+
+        // نمایش حالت لودینگ
+        function showLoadingState() {
+            document.getElementById('loadingSection').classList.remove('hidden');
+        }
+
+        // به‌روزرسانی فاز بازی
+        function updateGamePhase(text) {
+            const phaseElement = document.getElementById('gamePhase');
+            phaseElement.textContent = text;
+            phaseElement.classList.remove('hidden');
         }
 
         // به‌روزرسانی نمایش بازی
-        function updateGameDisplay(gameData, userRole) {
-            gameState.gameData = gameData;
-            gameState.userRole = userRole;
-
+        function updateGameDisplay(game) {
             // به‌روزرسانی حروف کلمه
+            updateWordDisplay(game.currentState || '_'.repeat(game.wordLength || 0));
+            
+            // به‌روزرسانی اطلاعات بازی
+            document.getElementById('categoryValue').textContent = game.category || 'انتخاب نشده';
+            document.getElementById('wordLengthValue').textContent = game.wordLength || '-';
+            document.getElementById('attemptsLeftValue').textContent = 6 - (game.attempts || 0);
+            document.getElementById('hintsLeftValue').textContent = 2 - (game.hintsUsed || 0);
+            
+            // به‌روزرسانی دکمه راهنمایی
+            const hintBtn = document.getElementById('hintBtn');
+            const hintsLeft = 2 - (game.hintsUsed || 0);
+            hintBtn.textContent = `درخواست راهنمایی (${hintsLeft} باقی‌مانده)`;
+            hintBtn.disabled = hintsLeft <= 0;
+            
+            // به‌روزرسانی حروف حدس زده شده
+            updateGuessedLetters(game.guessedLetters || []);
+            
+            // به‌روزرسانی اطلاعات بازیکنان
+            updatePlayersInfo(game);
+        }
+
+        // به‌روزرسانی نمایش کلمه
+        function updateWordDisplay(currentState) {
             const wordLetters = document.getElementById('wordLetters');
             wordLetters.innerHTML = '';
             
-            const currentState = gameData.currentWordState || '_'.repeat(gameData.wordLength || 0);
             for (let i = 0; i < currentState.length; i++) {
                 const letterDiv = document.createElement('div');
                 letterDiv.className = 'letter';
@@ -852,88 +1002,242 @@
                 } else if (currentState[i] !== '_') {
                     letterDiv.classList.add('revealed');
                     letterDiv.textContent = currentState[i];
+                    letterDiv.classList.add('pulse');
                 } else {
                     letterDiv.textContent = '?';
                 }
                 
                 wordLetters.appendChild(letterDiv);
             }
+        }
+
+        // به‌روزرسانی حروف حدس زده شده
+        function updateGuessedLetters(guessedLetters) {
+            const container = document.getElementById('guessedLettersContainer');
+            container.innerHTML = '';
             
-            // به‌روزرسانی اطلاعات بازی
-            document.getElementById('categoryValue').textContent = gameData.category || '-';
-            document.getElementById('wordLengthValue').textContent = gameData.wordLength || '-';
-            document.getElementById('attemptsLeftValue').textContent = gameData.maxAttempts - gameData.attempts;
-            document.getElementById('hintsLeftValue').textContent = gameData.maxHints - gameData.hintsUsed;
-            
-            // به‌روزرسانی دکمه راهنمایی
-            const hintBtn = document.getElementById('hintBtn');
-            hintBtn.textContent = `درخواست راهنمایی (${gameData.maxHints - gameData.hintsUsed} باقی‌مانده)`;
-            hintBtn.disabled = gameData.hintsUsed >= gameData.maxHints;
-            
-            // به‌روزرسانی حروف حدس زده شده
-            const guessedContainer = document.getElementById('guessedLettersContainer');
-            guessedContainer.innerHTML = '';
-            
-            gameData.guessedLetters.forEach(letter => {
+            guessedLetters.forEach(letter => {
                 const letterDiv = document.createElement('div');
                 letterDiv.className = 'guessed-letter';
-                letterDiv.classList.add(gameData.word && gameData.word.includes(letter) ? 'correct' : 'incorrect');
+                
+                // بررسی اینکه آیا حرف در کلمه وجود دارد یا نه
+                const isCorrect = gameState.gameData.word && 
+                                gameState.gameData.word.includes(letter);
+                
+                letterDiv.classList.add(isCorrect ? 'correct' : 'incorrect');
                 letterDiv.textContent = letter;
-                guessedContainer.appendChild(letterDiv);
+                container.appendChild(letterDiv);
             });
-
-            // به‌روزرسانی وضعیت بازی
-            updateGamePhase(gameData.status, userRole);
         }
 
-        // به‌روزرسانی فاز بازی
-        function updateGamePhase(status, userRole) {
-            const gamePhase = document.getElementById('gamePhase');
+        // به‌روزرسانی اطلاعات بازیکنان
+        function updatePlayersInfo(game) {
+            // فعال کردن کارت بازیکن فعال
+            document.getElementById('creatorCard').classList.toggle('active', gameState.userRole === 'creator');
+            document.getElementById('opponentCard').classList.toggle('active', gameState.userRole === 'opponent');
             
-            switch (status) {
-                case 'waiting':
-                    gamePhase.textContent = userRole === 'creator' ? 
-                        '⏳ در انتظار بازیکن دوم...' : 
-                        '🎮 منتظر شروع بازی توسط سازنده...';
-                    break;
-                case 'active':
-                    if (userRole === 'creator') {
-                        gamePhase.textContent = '👀 در حال مشاهده حدس‌های بازیکن...';
-                    } else {
-                        gamePhase.textContent = '🎯 نوبت شما برای حدس زدن!';
+            // به‌روزرسانی امتیازات
+            document.getElementById('creatorScore').textContent = `${game.creatorScore || 0} امتیاز`;
+            document.getElementById('opponentScore').textContent = `${game.opponentScore || 0} امتیاز`;
+        }
+
+        // به‌روزرسانی نمایش بازی پایان یافته
+        function updateEndedGameDisplay(game) {
+            // نمایش کلمه کامل
+            updateWordDisplay(game.word);
+            document.getElementById('endedWordLetters').innerHTML = document.getElementById('wordLetters').innerHTML;
+            
+            // نمایش اطلاعات پایانی
+            document.getElementById('gameResultValue').textContent = 
+                game.winnerId == gameState.userId ? 'برنده 🏆' : 'بازنده 💔';
+            document.getElementById('correctWordValue').textContent = game.word;
+            document.getElementById('totalAttemptsValue').textContent = game.attempts || 0;
+            
+            const userScore = gameState.userRole === 'creator' ? 
+                (game.creatorScore || 0) : (game.opponentScore || 0);
+            document.getElementById('earnedScoreValue').textContent = `${userScore} امتیاز`;
+        }
+
+        // انتخاب دسته‌بندی
+        async function selectCategory(category) {
+            try {
+                const response = await fetch(`/api/game/${gameState.gameId}/category`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        userId: gameState.userId,
+                        category: category
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    showNotification(`✅ دسته‌بندی "${category}" انتخاب شد`);
+                    addChatMessage('system', `🗂️ دسته‌بندی "${category}" انتخاب شد`);
+                    // بروزرسانی فوری وضعیت
+                    setTimeout(checkGameStatus, 500);
+                } else {
+                    showNotification(`❌ ${data.error}`, true);
+                }
+            } catch (error) {
+                showNotification('❌ خطا در انتخاب دسته‌بندی', true);
+            }
+        }
+
+        // ثبت کلمه مخفی
+        async function submitWord() {
+            const wordInput = document.getElementById('wordInput');
+            const word = wordInput.value.trim();
+            
+            if (word.length < 3 || word.length > 15) {
+                showNotification('❌ کلمه باید بین ۳ تا ۱۵ حرف باشد', true);
+                wordInput.classList.add('shake');
+                setTimeout(() => wordInput.classList.remove('shake'), 500);
+                return;
+            }
+
+            if (!/^[آ-یa-z\s]+$/.test(word)) {
+                showNotification('❌ کلمه باید شامل حروف فارسی، انگلیسی یا فاصله باشد', true);
+                wordInput.classList.add('shake');
+                setTimeout(() => wordInput.classList.remove('shake'), 500);
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/game/${gameState.gameId}/word`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        userId: gameState.userId,
+                        word: word
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    showNotification('✅ کلمه مخفی با موفقیت ثبت شد');
+                    addChatMessage('system', `🔐 کلمه مخفی ثبت شد (${data.wordLength} حرف)`);
+                    wordInput.value = '';
+                    // بروزرسانی فوری وضعیت
+                    setTimeout(checkGameStatus, 500);
+                } else {
+                    showNotification(`❌ ${data.error}`, true);
+                }
+            } catch (error) {
+                showNotification('❌ خطا در ثبت کلمه', true);
+            }
+        }
+
+        // ارسال حدس
+        async function submitGuess() {
+            const guessInput = document.getElementById('guessInput');
+            const guess = guessInput.value.trim().toLowerCase();
+            
+            if (guess.length !== 1 || !/^[آ-یa-z]$/.test(guess)) {
+                showNotification('❌ لطفاً فقط یک حرف فارسی یا انگلیسی وارد کنید', true);
+                guessInput.classList.add('shake');
+                setTimeout(() => guessInput.classList.remove('shake'), 500);
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/game/${gameState.gameId}/guess`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        userId: gameState.userId,
+                        guess: guess
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    const resultText = data.correct ? 
+                        `✅ حرف "${guess}" صحیح بود!` : 
+                        `❌ حرف "${guess}" در کلمه وجود ندارد`;
+                    
+                    showNotification(resultText);
+                    addChatMessage('guess', resultText);
+                    guessInput.value = '';
+                    guessInput.focus();
+                    
+                    // بروزرسانی فوری وضعیت
+                    setTimeout(checkGameStatus, 500);
+                    
+                    if (data.gameCompleted) {
+                        addChatMessage('system', `🎯 بازی پایان یافت! برنده: ${data.winner}`);
                     }
-                    break;
-                case 'completed':
-                    // متن پایان بازی در تابع endGame تنظیم می‌شود
-                    break;
+                } else {
+                    showNotification(`❌ ${data.error}`, true);
+                }
+            } catch (error) {
+                showNotification('❌ خطا در ارسال حدس', true);
             }
         }
 
-        // پایان بازی
-        function endGame(winner, word) {
-            const gamePhase = document.getElementById('gamePhase');
-            
-            if (winner === gameState.userRole) {
-                gamePhase.textContent = '🏆 شما برنده شدید!';
-                showNotification('🎉 تبریک! شما برنده بازی شدید!');
-            } else {
-                gamePhase.textContent = '💔 متأسفانه باختید!';
-                showNotification('❌ متأسفانه باختید!', true);
+        // درخواست راهنمایی
+        async function requestHint() {
+            try {
+                const response = await fetch(`/api/game/${gameState.gameId}/hint`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        userId: gameState.userId
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    showNotification(`💡 راهنمایی: حرف "${data.hintLetter}"`);
+                    addChatMessage('hint', `💡 راهنمایی: حرف "${data.hintLetter}"`);
+                    // بروزرسانی فوری وضعیت
+                    setTimeout(checkGameStatus, 500);
+                } else {
+                    showNotification(`❌ ${data.error}`, true);
+                }
+            } catch (error) {
+                showNotification('❌ خطا در درخواست راهنمایی', true);
             }
+        }
 
-            // غیرفعال کردن ورودی‌ها
-            document.getElementById('guessSection').classList.add('hidden');
-            document.getElementById('wordInputSection').classList.add('hidden');
-            document.getElementById('categorySection').classList.add('hidden');
+        // کپی کردن کد بازی
+        function copyGameCode() {
+            navigator.clipboard.writeText(gameState.gameId).then(() => {
+                showNotification('✅ کد بازی کپی شد!');
+            }).catch(() => {
+                showNotification('❌ خطا در کپی کردن کد', true);
+            });
+        }
 
-            addChatMessage('system', `📝 کلمه صحیح: "${word}"`);
+        // بروزرسانی بازی
+        function refreshGame() {
+            showNotification('🔄 در حال بروزرسانی وضعیت...', false, 'info');
+            checkGameStatus();
+        }
+
+        // خروج از بازی
+        function leaveGame() {
+            if (confirm('آیا مطمئن هستید که می‌خواهید از بازی خارج شوید؟')) {
+                window.close();
+            }
+        }
+
+        // بازی جدید
+        function newGame() {
+            if (confirm('آیا می‌خواهید بازی جدیدی شروع کنید؟')) {
+                window.location.href = '/';
+            }
         }
 
         // افزودن پیام به چت
         function addChatMessage(type, text) {
             const chatContainer = document.getElementById('gameChat');
             const messageDiv = document.createElement('div');
-            messageDiv.className = `message ${type}`;
+            messageDiv.className = `message ${type} fade-in`;
             messageDiv.textContent = text;
             
             chatContainer.appendChild(messageDiv);
@@ -941,44 +1245,33 @@
         }
 
         // نمایش نوتیفیکیشن
-        function showNotification(message, isError = false) {
+        function showNotification(message, isError = false, type = '') {
             const notification = document.getElementById('notification');
             notification.textContent = message;
-            notification.className = `notification ${isError ? 'error' : ''}`;
+            notification.className = `notification ${isError ? 'error' : type || 'show'}`;
             notification.classList.add('show');
             
             setTimeout(() => {
                 notification.classList.remove('show');
-            }, 3000);
+            }, 4000);
         }
 
-        // بروزرسانی دستی وضعیت
-        function updateGameStatus() {
-            if (gameState.ws && gameState.ws.readyState === WebSocket.OPEN) {
-                gameState.ws.send(JSON.stringify({
-                    type: 'get_game_state',
-                    gameId: gameState.gameId,
-                    userId: gameState.userId
-                }));
-                showNotification('🔄 در حال بروزرسانی وضعیت بازی...');
-            }
-        }
-
-        // خروج از بازی
-        function leaveGame() {
-            if (confirm('آیا مطمئن هستید که می‌خواهید از بازی خارج شوید؟')) {
-                window.location.href = '/';
-            }
-        }
-
-        // مدیریت کلید Enter در فیلدهای ورودی
+        // مدیریت کلید Enter
         document.addEventListener('keypress', function(event) {
             if (event.key === 'Enter') {
-                if (document.getElementById('wordInputSection').classList.contains('hidden') === false) {
+                if (!document.getElementById('wordInputSection').classList.contains('hidden')) {
                     submitWord();
-                } else if (document.getElementById('guessSection').classList.contains('hidden') === false) {
+                } else if (!document.getElementById('guessSection').classList.contains('hidden')) {
                     submitGuess();
                 }
+            }
+        });
+
+        // جلوگیری از بسته شدن صفحه
+        window.addEventListener('beforeunload', function(event) {
+            if (gameState.gameData && gameState.gameData.status === 'active') {
+                event.preventDefault();
+                event.returnValue = 'آیا مطمئن هستید که می‌خواهید از بازی خارج شوید؟';
             }
         });
     </script>
