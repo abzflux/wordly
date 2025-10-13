@@ -8,7 +8,7 @@ const PORT = process.env.PORT || 3000;
 
 // تنظیمات
 const BOT_TOKEN = process.env.BOT_TOKEN || '8408419647:AAFivpMKAKSGoIWI0Qq8PJ_zrdhQK9wlJFo';
-const WEB_APP_URL = process.env.WEB_APP_URL || 'https://wordly.ct.ws/';
+const WEB_APP_URL = process.env.WEB_APP_URL || 'https://your-app.onrender.com';
 
 // تنظیمات PostgreSQL
 const DB_HOST = process.env.DB_HOST || 'dpg-d3lquoidbo4c73bbhgu0-a.frankfurt-postgres.render.com';
@@ -74,38 +74,40 @@ class WordGameBot {
 
     async createTables() {
         try {
+            // ایجاد جدول کاربران با نام ستون‌های صحیح
             await this.db.query(`
                 CREATE TABLE IF NOT EXISTS users (
                     userid BIGINT PRIMARY KEY,
-                    first_name VARCHAR(255) NOT NULL,
+                    firstname VARCHAR(255) NOT NULL,
                     username VARCHAR(255),
-                    total_score INTEGER DEFAULT 0,
-                    games_played INTEGER DEFAULT 0,
-                    best_score INTEGER DEFAULT 0,
-                    multiplayer_wins INTEGER DEFAULT 0,
-                    hints_used INTEGER DEFAULT 0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    totalscore INTEGER DEFAULT 0,
+                    gamesplayed INTEGER DEFAULT 0,
+                    bestscore INTEGER DEFAULT 0,
+                    multiplayerwins INTEGER DEFAULT 0,
+                    hintsused INTEGER DEFAULT 0,
+                    createdat TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             `);
 
+            // ایجاد جدول بازی‌ها با نام ستون‌های صحیح
             await this.db.query(`
-                CREATE TABLE IF NOT EXISTS games (
-                    game_id VARCHAR(10) PRIMARY KEY,
-                    creator_id BIGINT NOT NULL,
-                    opponent_id BIGINT,
+                CREATE TABLE IF NOT EXISTS multiplayer_games (
+                    gameid VARCHAR(10) PRIMARY KEY,
+                    creatorid BIGINT NOT NULL,
+                    opponentid BIGINT,
                     category VARCHAR(100),
                     word VARCHAR(255),
-                    word_length INTEGER DEFAULT 0,
-                    current_state VARCHAR(255),
-                    guessed_letters TEXT DEFAULT '[]',
+                    wordlength INTEGER DEFAULT 0,
+                    currentwordstate VARCHAR(255),
+                    guessedletters TEXT DEFAULT '[]',
                     attempts INTEGER DEFAULT 0,
-                    max_attempts INTEGER DEFAULT 6,
-                    hints_used INTEGER DEFAULT 0,
-                    max_hints INTEGER DEFAULT 2,
+                    maxattempts INTEGER DEFAULT 6,
+                    hintsused INTEGER DEFAULT 0,
+                    maxhints INTEGER DEFAULT 2,
                     status VARCHAR(20) DEFAULT 'waiting',
-                    winner_id BIGINT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    winnerid BIGINT,
+                    createdat TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updatedat TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             `);
 
@@ -124,16 +126,16 @@ class WordGameBot {
         try {
             const gameId = this.generateGameId();
             
-            // ثبت کاربر
+            // ثبت کاربر با نام ستون‌های صحیح
             await this.db.query(`
-                INSERT INTO users (userid, first_name) 
+                INSERT INTO users (userid, firstname) 
                 VALUES ($1, $2) 
                 ON CONFLICT (userid) DO NOTHING
             `, [userId, firstName]);
 
-            // ایجاد بازی
+            // ایجاد بازی با نام ستون‌های صحیح
             await this.db.query(`
-                INSERT INTO games (game_id, creator_id, status) 
+                INSERT INTO multiplayer_games (gameid, creatorid, status) 
                 VALUES ($1, $2, 'waiting')
             `, [gameId, userId]);
 
@@ -229,18 +231,18 @@ class WordGameBot {
                 return;
             }
 
-            // ثبت کاربر
+            // ثبت کاربر با نام ستون‌های صحیح
             await this.db.query(`
-                INSERT INTO users (userid, first_name) 
+                INSERT INTO users (userid, firstname) 
                 VALUES ($1, $2) 
                 ON CONFLICT (userid) DO NOTHING
             `, [userId, firstName]);
 
-            // آپدیت بازی
+            // آپدیت بازی با نام ستون‌های صحیح
             await this.db.query(`
-                UPDATE games 
-                SET opponent_id = $1, status = 'active' 
-                WHERE game_id = $2
+                UPDATE multiplayer_games 
+                SET opponentid = $1, status = 'active' 
+                WHERE gameid = $2
             `, [userId, gameId]);
 
             // آپدیت حافظه
@@ -300,7 +302,7 @@ class WordGameBot {
             if (!game) return;
 
             await this.db.query(
-                'UPDATE games SET status = $1 WHERE game_id = $2',
+                'UPDATE multiplayer_games SET status = $1 WHERE gameid = $2',
                 ['cancelled', gameId]
             );
 
@@ -455,21 +457,21 @@ class WordGameBot {
     async loadActiveGames() {
         try {
             const result = await this.db.query(
-                "SELECT * FROM games WHERE status IN ('waiting', 'active')"
+                "SELECT * FROM multiplayer_games WHERE status IN ('waiting', 'active')"
             );
             
             for (const row of result.rows) {
                 const game = {
-                    gameId: row.game_id,
-                    creatorId: row.creator_id,
-                    opponentId: row.opponent_id,
+                    gameId: row.gameid,
+                    creatorId: row.creatorid,
+                    opponentId: row.opponentid,
                     status: row.status,
-                    createdAt: row.created_at
+                    createdAt: row.createdat
                 };
-                this.activeGames.set(row.game_id, game);
+                this.activeGames.set(row.gameid, game);
                 
                 if (row.status === 'waiting') {
-                    this.waitingGames.set(row.creator_id, row.game_id);
+                    this.waitingGames.set(row.creatorid, row.gameid);
                 }
             }
             
@@ -499,7 +501,7 @@ class WordGameBot {
                 
                 if (!game) {
                     const result = await this.db.query(
-                        'SELECT * FROM games WHERE game_id = $1',
+                        'SELECT * FROM multiplayer_games WHERE gameid = $1',
                         [gameId]
                     );
                     
@@ -509,20 +511,22 @@ class WordGameBot {
                     
                     const row = result.rows[0];
                     game = {
-                        gameId: row.game_id,
-                        creatorId: row.creator_id,
-                        opponentId: row.opponent_id,
+                        gameId: row.gameid,
+                        creatorId: row.creatorid,
+                        opponentId: row.opponentid,
                         category: row.category,
                         word: row.word,
-                        wordLength: row.word_length,
-                        currentState: row.current_state,
-                        guessedLetters: JSON.parse(row.guessed_letters || '[]'),
+                        wordLength: row.wordlength,
+                        currentState: row.currentwordstate,
+                        guessedLetters: JSON.parse(row.guessedletters || '[]'),
                         attempts: row.attempts,
-                        maxAttempts: row.max_attempts,
-                        hintsUsed: row.hints_used,
-                        maxHints: row.max_hints,
+                        maxAttempts: row.maxattempts,
+                        hintsUsed: row.hintsused,
+                        maxHints: row.maxhints,
                         status: row.status,
-                        winnerId: row.winner_id
+                        winnerId: row.winnerid,
+                        creatorScore: row.creatorscore,
+                        opponentScore: row.opponentscore
                     };
                     this.activeGames.set(gameId, game);
                 }
@@ -547,7 +551,7 @@ class WordGameBot {
                 }
 
                 await this.db.query(
-                    'UPDATE games SET category = $1 WHERE game_id = $2',
+                    'UPDATE multiplayer_games SET category = $1 WHERE gameid = $2',
                     [category, gameId]
                 );
 
@@ -580,7 +584,7 @@ class WordGameBot {
                 const currentState = word.split('').map(c => c === ' ' ? ' ' : '_').join('');
 
                 await this.db.query(
-                    'UPDATE games SET word = $1, word_length = $2, current_state = $3 WHERE game_id = $4',
+                    'UPDATE multiplayer_games SET word = $1, wordlength = $2, currentwordstate = $3 WHERE gameid = $4',
                     [word, word.length, currentState, gameId]
                 );
 
@@ -608,13 +612,129 @@ class WordGameBot {
                     return res.status(403).json({ success: false, error: 'دسترسی غیرمجاز' });
                 }
 
-                // پردازش حدس (کد قبلی)
-                // ...
+                // اعتبارسنجی حدس
+                if (guess.length !== 1 || !/^[آ-یa-z]$/.test(guess)) {
+                    return res.status(400).json({ success: false, error: 'لطفاً فقط یک حرف فارسی یا انگلیسی وارد کنید' });
+                }
 
-                res.json({ success: true, message: 'حدس ثبت شد' });
+                let guessedLetters = JSON.parse(game.guessedLetters || '[]');
+                if (guessedLetters.includes(guess)) {
+                    return res.status(400).json({ success: false, error: 'این حرف قبلاً حدس زده شده است' });
+                }
+
+                // پردازش حدس
+                guessedLetters.push(guess);
+                const word = game.word;
+                let currentState = game.currentState || '_'.repeat(word.length);
+                let correctGuess = false;
+
+                let newWordState = '';
+                for (let i = 0; i < word.length; i++) {
+                    if (word[i] === guess || currentState[i] !== '_') {
+                        newWordState += word[i];
+                        if (word[i] === guess) correctGuess = true;
+                    } else {
+                        newWordState += '_';
+                    }
+                }
+
+                const newAttempts = game.attempts + (correctGuess ? 0 : 1);
+                let newStatus = game.status;
+
+                // بررسی پایان بازی
+                if (newWordState === word) {
+                    newStatus = 'completed';
+                    await this.db.query(
+                        'UPDATE multiplayer_games SET winnerid = $1, opponentscore = 100, status = $2 WHERE gameid = $3',
+                        [userId, 'completed', gameId]
+                    );
+                } else if (newAttempts >= 6) {
+                    newStatus = 'completed';
+                    await this.db.query(
+                        'UPDATE multiplayer_games SET winnerid = $1, creatorscore = 50, status = $2 WHERE gameid = $3',
+                        [game.creatorId, 'completed', gameId]
+                    );
+                }
+
+                // ذخیره در دیتابیس
+                await this.db.query(
+                    `UPDATE multiplayer_games SET 
+                     attempts = $1, 
+                     guessedletters = $2,
+                     currentwordstate = $3,
+                     status = $4
+                     WHERE gameid = $5`,
+                    [newAttempts, JSON.stringify(guessedLetters), newWordState, newStatus, gameId]
+                );
+
+                // آپدیت حافظه
+                game.attempts = newAttempts;
+                game.guessedLetters = guessedLetters;
+                game.currentState = newWordState;
+                game.status = newStatus;
+                this.activeGames.set(gameId, game);
+
+                res.json({ 
+                    success: true,
+                    correct: correctGuess,
+                    currentWordState: newWordState,
+                    attemptsLeft: 6 - newAttempts,
+                    gameCompleted: newStatus === 'completed',
+                    winner: newStatus === 'completed' ? (newWordState === word ? 'opponent' : 'creator') : null
+                });
 
             } catch (error) {
-                this.log(`❌ خطا در ثبت حدس: ${error.message}`);
+                this.log(`❌ خطا در پردازش حدس: ${error.message}`);
+                res.status(500).json({ success: false, error: 'خطای سرور' });
+            }
+        });
+
+        // API برای درخواست راهنمایی
+        app.post('/api/game/:gameId/hint', async (req, res) => {
+            try {
+                const { gameId } = req.params;
+                const { userId } = req.body;
+
+                const game = this.activeGames.get(gameId);
+                if (!game || game.opponentId != userId) {
+                    return res.status(403).json({ success: false, error: 'دسترسی غیرمجاز' });
+                }
+
+                if (game.hintsUsed >= 2) {
+                    return res.status(400).json({ success: false, error: 'شما تمام راهنمایی‌های خود را استفاده کرده‌اید' });
+                }
+
+                const word = game.word;
+                const guessedLetters = game.guessedLetters || [];
+                const availableLetters = [];
+
+                for (let char of word) {
+                    if (!guessedLetters.includes(char) && !availableLetters.includes(char)) {
+                        availableLetters.push(char);
+                    }
+                }
+
+                if (availableLetters.length === 0) {
+                    return res.status(400).json({ success: false, error: 'تمام حروف کلمه قبلاً حدس زده شده‌اند' });
+                }
+
+                const hintLetter = availableLetters[Math.floor(Math.random() * availableLetters.length)];
+
+                await this.db.query(
+                    'UPDATE multiplayer_games SET hintsused = hintsused + 1 WHERE gameid = $1',
+                    [gameId]
+                );
+
+                game.hintsUsed = (game.hintsUsed || 0) + 1;
+
+                res.json({ 
+                    success: true,
+                    hintLetter: hintLetter,
+                    hintsLeft: 2 - game.hintsUsed
+                });
+
+            } catch (error) {
+                this.log(`❌ خطا در درخواست راهنمایی: ${error.message}`);
                 res.status(500).json({ success: false, error: 'خطای سرور' });
             }
         });
