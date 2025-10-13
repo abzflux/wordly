@@ -502,159 +502,182 @@ class WordGameBot {
         });
     }
 
-    async createMultiplayerGame(chatId, userId, firstName) {
-        try {
-            const gameId = this.generateGameId();
-            
-            await this.db.query(
-                'INSERT INTO multiplayer_games (gameId, creatorId, status) VALUES ($1, $2, $3)',
-                [gameId, userId, 'waiting']
-            );
+    // ایجاد بازی جدید
+	async createMultiplayerGame(chatId, userId, firstName) {
+		try {
+			// ثبت کاربر در جدول users اگر موجود نباشد
+			await this.db.query(`
+				INSERT INTO users (userid, firstname)
+				VALUES ($1, $2)
+				ON CONFLICT (userid) DO NOTHING
+			`, [userId, firstName]);
 
-            const game = {
-                gameid: gameId,
-                creatorid: userId,
-                status: 'waiting',
-                createdat: new Date()
-            };
+			const gameId = this.generateGameId();
 
-            this.activeMultiplayerGames.set(gameId, game);
-            this.waitingGames.set(userId, gameId);
+			// ایجاد رکورد بازی دو نفره در دیتابیس
+			await this.db.query(`
+				INSERT INTO multiplayer_games (gameid, creatorid, status)
+				VALUES ($1, $2, 'waiting')
+			`, [gameId, userId]);
 
-            const gameText = 
-                `🎮 <b>بازی دو نفره ایجاد شد!</b>\n\n` +
-                `🆔 <b>کد بازی:</b> <code>${gameId}</code>\n` +
-                `👤 <b>سازنده:</b> ${firstName}\n` +
-                `⏳ <b>وضعیت:</b> در انتظار بازیکن دوم\n\n` +
-                `📝 <b>برای شروع بازی:</b>\n` +
-                `1. کد بازی را برای دوست خود بفرستید\n` +
-                `2. یا از گزینه "پیدا کردن بازی" استفاده کنید\n\n` +
-                `⚡ بازی به طور خودکار در ۱۰ دقیقه لغو می‌شود`;
+			// ذخیره در حافظه محلی
+			const game = {
+				gameid: gameId,
+				creatorid: userId,
+				status: 'waiting',
+				createdat: new Date(),
+				updatedat: new Date()
+			};
+			this.activeMultiplayerGames.set(gameId, game);
+			this.waitingGames.set(userId, gameId);
 
-            await bot.sendMessage(chatId, gameText, {
-                parse_mode: 'HTML',
-                ...this.createGameActionsMenu(gameId, true, false)
-            });
+			// پیام به سازنده
+			const gameText = 
+				`🎮 <b>بازی دو نفره ایجاد شد!</b>\n\n` +
+				`🆔 <b>کد بازی:</b> <code>${gameId}</code>\n` +
+				`👤 <b>سازنده:</b> ${firstName}\n` +
+				`⏳ <b>وضعیت:</b> در انتظار بازیکن دوم\n\n` +
+				`📝 <b>برای شروع بازی:</b>\n` +
+				`1. کد بازی را برای دوست خود بفرستید\n` +
+				`2. یا از گزینه "پیدا کردن بازی" استفاده کنید\n\n` +
+				`⚡ بازی به طور خودکار در ۱۰ دقیقه لغو می‌شود`;
 
-            setTimeout(async () => {
-                const currentGame = this.activeMultiplayerGames.get(gameId);
-                if (currentGame && currentGame.status === 'waiting') {
-                    await this.cancelMultiplayerGame(gameId, '⏰ زمان بازی به پایان رسید');
-                }
-            }, 10 * 60 * 1000);
+			await bot.sendMessage(chatId, gameText, {
+				parse_mode: 'HTML',
+				...this.createGameActionsMenu(gameId, true, false)
+			});
 
-        } catch (error) {
-            this.log(`❌ خطا در ایجاد بازی: ${error.message}`);
-            await bot.sendMessage(chatId, '❌ خطا در ایجاد بازی. لطفاً دوباره تلاش کنید.');
-        }
-    }
+			// تایمر ۱۰ دقیقه‌ای برای لغو بازی در صورت عدم پیوستن بازیکن دوم
+			setTimeout(async () => {
+				const currentGame = this.activeMultiplayerGames.get(gameId);
+				if (currentGame && currentGame.status === 'waiting') {
+					await this.cancelMultiplayerGame(gameId, '⏰ زمان بازی به پایان رسید');
+				}
+			}, 10 * 60 * 1000);
 
-    async findMultiplayerGame(chatId, userId, firstName) {
-        try {
-            const waitingGames = Array.from(this.waitingGames.entries())
-                .filter(([creatorId, gameId]) => creatorId !== userId)
-                .slice(0, 5);
+		} catch (error) {
+			this.log(`❌ خطا در ایجاد بازی: ${error.message}`);
+			await bot.sendMessage(chatId, '❌ خطا در ایجاد بازی. لطفاً دوباره تلاش کنید.');
+		}
+	}
 
-            if (waitingGames.length === 0) {
-                await bot.sendMessage(chatId,
-                    "🔍 <b>هیچ بازی در انتظاری پیدا نشد</b>\n\n" +
-                    "می‌توانید خودتان یک بازی جدید ایجاد کنید یا کمی بعد دوباره بررسی کنید.",
-                    {
-                        parse_mode: 'HTML',
-                        ...this.createMultiplayerMenu()
-                    }
-                );
-                return;
-            }
+	// پیدا کردن بازی در انتظار
+	async findMultiplayerGame(chatId, userId) {
+		try {
+			const waitingGames = Array.from(this.waitingGames.entries())
+				.filter(([creatorId, gameId]) => creatorId !== userId)
+				.slice(0, 5);
 
-            const buttons = waitingGames.map(([creatorId, gameId]) => {
-                return [{
-                    text: `🎮 بازی ${gameId}`,
-                    callback_data: `join_game_${gameId}`
-                }];
-            });
+			if (waitingGames.length === 0) {
+				await bot.sendMessage(chatId,
+					"🔍 <b>هیچ بازی در انتظاری پیدا نشد</b>\n\n" +
+					"می‌توانید خودتان یک بازی جدید ایجاد کنید یا کمی بعد دوباره بررسی کنید.",
+					{
+						parse_mode: 'HTML',
+						...this.createMultiplayerMenu()
+					}
+				);
+				return;
+			}
 
-            buttons.push([{
-                text: '🔙 بازگشت',
-                callback_data: 'multiplayer'
-            }]);
+			const buttons = waitingGames.map(([creatorId, gameId]) => [{
+				text: `🎮 بازی ${gameId}`,
+				callback_data: `join_game_${gameId}`
+			}]);
 
-            await bot.sendMessage(chatId,
-                "🔍 <b>بازی‌های در انتظار:</b>\n\n" +
-                "یکی از بازی‌های زیر را برای پیوستن انتخاب کنید:",
-                {
-                    parse_mode: 'HTML',
-                    reply_markup: { inline_keyboard: buttons }
-                }
-            );
+			buttons.push([{
+				text: '🔙 بازگشت',
+				callback_data: 'multiplayer'
+			}]);
 
-        } catch (error) {
-            this.log(`❌ خطا در پیدا کردن بازی: ${error.message}`);
-            await bot.sendMessage(chatId, '❌ خطا در پیدا کردن بازی. لطفاً دوباره تلاش کنید.');
-        }
-    }
+			await bot.sendMessage(chatId,
+				"🔍 <b>بازی‌های در انتظار:</b>\n\n" +
+				"یکی از بازی‌های زیر را برای پیوستن انتخاب کنید:",
+				{
+					parse_mode: 'HTML',
+					reply_markup: { inline_keyboard: buttons }
+				}
+			);
 
-    async joinMultiplayerGame(chatId, userId, firstName, gameId) {
-        try {
-            const game = this.activeMultiplayerGames.get(gameId);
-            
-            if (!game) {
-                await bot.sendMessage(chatId, '❌ بازی مورد نظر یافت نشد.');
-                return;
-            }
+		} catch (error) {
+			this.log(`❌ خطا در پیدا کردن بازی: ${error.message}`);
+			await bot.sendMessage(chatId, '❌ خطا در پیدا کردن بازی. لطفاً دوباره تلاش کنید.');
+		}
+	}
 
-            if (game.creatorid === userId) {
-                await bot.sendMessage(chatId, '❌ نمی‌توانید به بازی خودتان بپیوندید.');
-                return;
-            }
+	// پیوستن به بازی
+	async joinMultiplayerGame(chatId, userId, firstName, gameId) {
+		try {
+			const game = this.activeMultiplayerGames.get(gameId);
+			if (!game) {
+				await bot.sendMessage(chatId, '❌ بازی مورد نظر یافت نشد.');
+				return;
+			}
 
-            if (game.status !== 'waiting') {
-                await bot.sendMessage(chatId, '❌ این بازی قبلاً شروع شده است.');
-                return;
-            }
+			if (game.creatorid === userId) {
+				await bot.sendMessage(chatId, '❌ نمی‌توانید به بازی خودتان بپیوندید.');
+				return;
+			}
 
-            await this.db.query(
-                'UPDATE multiplayer_games SET opponentId = $1, status = $2, attempts = 0, lastActivity = CURRENT_TIMESTAMP WHERE gameId = $3',
-                [userId, 'active', gameId]
-            );
+			if (game.status !== 'waiting') {
+				await bot.sendMessage(chatId, '❌ این بازی قبلاً شروع شده است.');
+				return;
+			}
 
-            // آپدیت کش با مقادیر اولیه صحیح
-            game.opponentid = userId;
-            game.status = 'active';
-            game.attempts = 0;
-            game.guessedletters = '[]';
-            game.hints = 2;
-            game.hintsused = 0;
-            this.activeMultiplayerGames.set(gameId, game);
-            this.waitingGames.delete(game.creatorid);
+			// ثبت بازیکن دوم در users
+			await this.db.query(`
+				INSERT INTO users (userid, firstname)
+				VALUES ($1, $2)
+				ON CONFLICT (userid) DO NOTHING
+			`, [userId, firstName]);
 
-            const creatorMessage = 
-                `🎉 <b>بازیکن دوم پیوست!</b>\n\n` +
-                `👤 <b>بازیکن:</b> ${firstName}\n` +
-                `🆔 <b>کد بازی:</b> <code>${gameId}</code>\n\n` +
-                `📝 لطفاً دسته‌بندی کلمه را انتخاب کنید:`;
+			// آپدیت بازی در دیتابیس
+			await this.db.query(`
+				UPDATE multiplayer_games
+				SET opponentid = $1, status = 'active', attempts = 0, lastactivity = CURRENT_TIMESTAMP
+				WHERE gameid = $2
+			`, [userId, gameId]);
 
-            await bot.sendMessage(game.creatorid, creatorMessage, {
-                parse_mode: 'HTML',
-                ...this.createCategoryMenu()
-            });
+			// آپدیت حافظه محلی
+			game.opponentid = userId;
+			game.status = 'active';
+			game.attempts = 0;
+			game.guessedletters = '[]';
+			game.hints = 2;
+			game.hintsused = 0;
+			this.activeMultiplayerGames.set(gameId, game);
+			this.waitingGames.delete(game.creatorid);
 
-            const opponentMessage = 
-                `🎉 <b>شما به بازی پیوستید!</b>\n\n` +
-                `🆔 <b>کد بازی:</b> <code>${gameId}</code>\n` +
-                `👤 <b>سازنده:</b> در حال انتخاب دسته‌بندی...\n\n` +
-                `⚡ به زودی بازی شروع می‌شود...`;
+			// پیام به سازنده
+			const creatorMessage = 
+				`🎉 <b>بازیکن دوم پیوست!</b>\n\n` +
+				`👤 <b>بازیکن:</b> ${firstName}\n` +
+				`🆔 <b>کد بازی:</b> <code>${gameId}</code>\n\n` +
+				`📝 لطفاً دسته‌بندی کلمه را انتخاب کنید:`;
 
-            await bot.sendMessage(chatId, opponentMessage, {
-                parse_mode: 'HTML',
-                ...this.createGameActionsMenu(gameId, false, false)
-            });
+			await bot.sendMessage(game.creatorid, creatorMessage, {
+				parse_mode: 'HTML',
+				...this.createCategoryMenu()
+			});
 
-        } catch (error) {
-            this.log(`❌ خطا در پیوستن به بازی: ${error.message}`);
-            await bot.sendMessage(chatId, '❌ خطا در پیوستن به بازی. لطفاً دوباره تلاش کنید.');
-        }
-    }
+			// پیام به بازیکن دوم
+			const opponentMessage = 
+				`🎉 <b>شما به بازی پیوستید!</b>\n\n` +
+				`🆔 <b>کد بازی:</b> <code>${gameId}</code>\n` +
+				`👤 <b>سازنده:</b> در حال انتخاب دسته‌بندی...\n\n` +
+				`⚡ به زودی بازی شروع می‌شود...`;
+
+			await bot.sendMessage(chatId, opponentMessage, {
+				parse_mode: 'HTML',
+				...this.createGameActionsMenu(gameId, false, false)
+			});
+
+		} catch (error) {
+			this.log(`❌ خطا در پیوستن به بازی: ${error.message}`);
+			await bot.sendMessage(chatId, '❌ خطا در پیوستن به بازی. لطفاً دوباره تلاش کنید.');
+		}
+	}
+
 
     async handleCategorySelection(chatId, userId, category, gameId) {
         try {
