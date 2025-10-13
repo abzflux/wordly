@@ -8,7 +8,7 @@ const PORT = process.env.PORT || 3000;
 
 // تنظیمات
 const BOT_TOKEN = process.env.BOT_TOKEN || '8408419647:AAFivpMKAKSGoIWI0Qq8PJ_zrdhQK9wlJFo';
-const WEB_APP_URL = process.env.WEB_APP_URL || `https://abzflux.github.io/wordly/public/`;
+const WEB_APP_URL = process.env.WEB_APP_URL || `https://abzflux.github.io/wordly/';
 
 // تنظیمات PostgreSQL
 const DB_HOST = process.env.DB_HOST || 'dpg-d3lquoidbo4c73bbhgu0-a.frankfurt-postgres.render.com';
