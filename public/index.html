@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>بازی حدس کلمه</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            text-align: center;
+            max-width: 500px;
+            width: 100%;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 2.5em;
+        }
+        p {
+            color: #666;
+            margin-bottom: 30px;
+            line-height: 1.6;
+        }
+        .btn {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 10px;
+            font-size: 1.1em;
+            cursor: pointer;
+            margin: 10px;
+            transition: all 0.3s ease;
+        }
+        .btn:hover {
+            background: #5a6fd8;
+            transform: translateY(-2px);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎮 بازی حدس کلمه</h1>
+        <p>به بازی جذاب و آموزشی حدس کلمه خوش آمدید! حالت دو نفره آنلاین با رابط کاربری مدرن</p>
+        
+        <div>
+            <button class="btn" onclick="createGame()">🆕 ایجاد بازی جدید</button>
+            <button class="btn" onclick="joinGame()">🔍 پیوستن به بازی</button>
+        </div>
+    </div>
+
+    <script>
+        function createGame() {
+            const userId = Math.floor(Math.random() * 1000000);
+            const firstName = 'بازیکن' + userId;
+            
+            fetch('/api/create-game', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ userId, firstName })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    window.location.href = `/game?gameId=${data.gameId}&userId=${userId}&role=creator`;
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+            });
+        }
+
+        function joinGame() {
+            const gameId = prompt('لطفاً کد بازی را وارد کنید:');
+            if (gameId) {
+                const userId = Math.floor(Math.random() * 1000000);
+                window.location.href = `/game?gameId=${gameId}&userId=${userId}&role=opponent`;
+            }
+        }
+    </script>
+</body>
+</html>
