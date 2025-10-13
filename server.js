@@ -8,7 +8,7 @@ const PORT = process.env.PORT || 3000;
 
 // تنظیمات
 const BOT_TOKEN = process.env.BOT_TOKEN || '8408419647:AAFivpMKAKSGoIWI0Qq8PJ_zrdhQK9wlJFo';
-const WEB_APP_URL = process.env.WEB_APP_URL || `https://wordly.ct.ws/';
+const WEB_APP_URL = process.env.WEB_APP_URL || `https://wordly.ct.ws/`;
 
 // تنظیمات PostgreSQL
 const DB_HOST = process.env.DB_HOST || 'dpg-d3lquoidbo4c73bbhgu0-a.frankfurt-postgres.render.com';
@@ -41,7 +41,10 @@ class WordGameBot {
         console.log('🎮 ربات بازی حدس کلمه راه‌اندازی شد');
     }
 
-    
+    log(message) {
+        const timestamp = new Date().toLocaleString('fa-IR');
+        console.log(`[${timestamp}] ${message}`);
+    }
 
     async connectDB() {
         try {
