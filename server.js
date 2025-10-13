@@ -41,10 +41,7 @@ class WordGameBot {
         console.log('🎮 ربات بازی حدس کلمه راه‌اندازی شد');
     }
 
-    log(message) {
-        const timestamp = new Date().toLocaleString('fa-IR');
-        console.log(`[${timestamp}] ${message}`);
-    }
+    
 
     async connectDB() {
         try {
