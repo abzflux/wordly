@@ -3,6 +3,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const { Pool } = require('pg');
 const path = require('path');
 const cors = require('cors');
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -21,6 +22,7 @@ const DB_PORT = process.env.DB_PORT || 5432;
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
 app.use(express.json());
+app.use(cors());
 app.use(express.static('public'));
 
 class WordGameBot {
@@ -29,14 +31,6 @@ class WordGameBot {
         this.dbConnected = false;
         this.activeGames = new Map();
         this.waitingGames = new Map();
-        this.wordCategories = {
-            'میوه': ['سیب', 'موز', 'پرتقال', 'انگور', 'هندوانه', 'خربزه', 'انار', 'انجیر', 'کیوی', 'لیمو'],
-            'حیوانات': ['شیر', 'فیل', 'میمون', 'گربه', 'سگ', 'خرگوش', 'گاو', 'گوسفند', 'مرغ', 'خروس'],
-            'شهرها': ['تهران', 'مشهد', 'اصفهان', 'شیراز', 'تبریز', 'اهواز', 'کرج', 'قم', 'کرمان', 'رشت'],
-            'کشورها': ['ایران', 'ترکیه', 'آلمان', 'فرانسه', 'ایتالیا', 'ژاپن', 'چین', 'هند', 'روسیه', 'کانادا'],
-            'غذاها': ['قورمه', 'کباب', 'پلو', 'آش', 'سوپ', 'پیتزا', 'همبرگر', 'سالاد', 'ماکارونی', 'لازانیا'],
-            'اشیا': ['میز', 'صندلی', 'کتاب', 'قلم', 'دفتر', 'تلویزیون', 'تلفن', 'کامپیوتر', 'لامپ', 'پنجره']
-        };
         
         console.log('🎮 ربات بازی حدس کلمه راه‌اندازی شد');
     }
@@ -89,23 +83,24 @@ class WordGameBot {
                 )
             `);
 
-            // ایجاد جدول بازی‌ها
+            // ایجاد جدول بازی‌ها با ساختار جدید
             await this.db.query(`
                 CREATE TABLE IF NOT EXISTS multiplayer_games (
                     gameid VARCHAR(10) PRIMARY KEY,
                     creatorid BIGINT NOT NULL,
+                    creatorname VARCHAR(255),
                     opponentid BIGINT,
-                    category VARCHAR(100),
+                    opponentname VARCHAR(255),
                     word VARCHAR(255),
-                    wordlength INTEGER DEFAULT 0,
-                    currentwordstate VARCHAR(255),
-                    guessedletters TEXT DEFAULT '[]',
-                    attempts INTEGER DEFAULT 0,
+                    worddisplay VARCHAR(255),
+                    guessedletters JSONB DEFAULT '[]',
+                    attemptsleft INTEGER DEFAULT 6,
                     maxattempts INTEGER DEFAULT 6,
-                    hintsused INTEGER DEFAULT 0,
+                    hintsusedcreator INTEGER DEFAULT 0,
+                    hintsusedopponent INTEGER DEFAULT 0,
                     maxhints INTEGER DEFAULT 2,
                     status VARCHAR(20) DEFAULT 'waiting',
-                    winnerid BIGINT,
+                    currentturn VARCHAR(20) DEFAULT 'creator',
                     creatorscore INTEGER DEFAULT 0,
                     opponentscore INTEGER DEFAULT 0,
                     createdat TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -132,27 +127,41 @@ class WordGameBot {
             await this.db.query(`
                 INSERT INTO users (userid, firstname) 
                 VALUES ($1, $2) 
-                ON CONFLICT (userid) DO NOTHING
+                ON CONFLICT (userid) DO UPDATE SET firstname = $2
             `, [userId, firstName]);
 
-            // ایجاد بازی
+            // ایجاد بازی با ساختار جدید
             await this.db.query(`
-                INSERT INTO multiplayer_games (gameid, creatorid, status) 
-                VALUES ($1, $2, 'waiting')
-            `, [gameId, userId]);
+                INSERT INTO multiplayer_games 
+                (gameid, creatorid, creatorname, status, currentturn) 
+                VALUES ($1, $2, $3, 'waiting', 'creator')
+            `, [gameId, userId, firstName]);
 
             const game = {
                 gameId,
                 creatorId: userId,
                 creatorName: firstName,
+                opponentId: null,
+                opponentName: null,
+                word: null,
+                wordDisplay: null,
+                guessedLetters: [],
+                attemptsLeft: 6,
+                maxAttempts: 6,
+                hintsUsedCreator: 0,
+                hintsUsedOpponent: 0,
+                maxHints: 2,
                 status: 'waiting',
+                currentTurn: 'creator',
+                creatorScore: 0,
+                opponentScore: 0,
                 createdAt: new Date()
             };
 
             this.activeGames.set(gameId, game);
             this.waitingGames.set(userId, gameId);
 
-            // ایجاد لینک بازی - استفاده از آدرس داخلی
+            // ایجاد لینک بازی
             const gameUrl = `${WEB_APP_URL}/game.html?gameId=${gameId}&userId=${userId}&role=creator`;
 
             const message = `
@@ -195,7 +204,7 @@ class WordGameBot {
                 { parse_mode: 'HTML' }
             );
 
-            // تایمر لغو خودکار
+            // تایمر لغو خودکار (10 دقیقه)
             setTimeout(async () => {
                 const currentGame = this.activeGames.get(gameId);
                 if (currentGame && currentGame.status === 'waiting') {
@@ -235,20 +244,20 @@ class WordGameBot {
             await this.db.query(`
                 INSERT INTO users (userid, firstname) 
                 VALUES ($1, $2) 
-                ON CONFLICT (userid) DO NOTHING
+                ON CONFLICT (userid) DO UPDATE SET firstname = $2
             `, [userId, firstName]);
 
             // آپدیت بازی
             await this.db.query(`
                 UPDATE multiplayer_games 
-                SET opponentid = $1, status = 'active' 
-                WHERE gameid = $2
-            `, [userId, gameId]);
+                SET opponentid = $1, opponentname = $2, status = 'waiting_for_word'
+                WHERE gameid = $3
+            `, [userId, firstName, gameId]);
 
             // آپدیت حافظه
             game.opponentId = userId;
             game.opponentName = firstName;
-            game.status = 'active';
+            game.status = 'waiting_for_word';
             this.activeGames.set(gameId, game);
             this.waitingGames.delete(game.creatorId);
 
@@ -259,13 +268,14 @@ class WordGameBot {
             await bot.sendMessage(chatId, 
                 `🎉 <b>به بازی پیوستید!</b>\n\n` +
                 `🆔 کد بازی: <code>${gameId}</code>\n` +
-                `👤 سازنده: ${game.creatorName}\n\n` +
-                `برای شروع بازی کلیک کنید:`,
+                `👤 سازنده: ${game.creatorName}\n` +
+                `⏳ وضعیت: منتظر ثبت کلمه توسط سازنده\n\n` +
+                `برای ورود به بازی کلیک کنید:`,
                 {
                     parse_mode: 'HTML',
                     reply_markup: {
                         inline_keyboard: [[
-                            { text: '🎮 شروع بازی', web_app: { url: opponentUrl } }
+                            { text: '🎮 ورود به بازی', web_app: { url: opponentUrl } }
                         ]]
                     }
                 }
@@ -276,13 +286,14 @@ class WordGameBot {
             await bot.sendMessage(game.creatorId,
                 `🎊 <b>بازیکن دوم پیوست!</b>\n\n` +
                 `👤 بازیکن: ${firstName}\n` +
-                `🆔 کد بازی: <code>${gameId}</code>\n\n` +
-                `برای ادامه بازی کلیک کنید:`,
+                `🆔 کد بازی: <code>${gameId}</code>\n` +
+                `📝 لطفاً کلمه مخفی را ثبت کنید\n\n` +
+                `برای ثبت کلمه کلیک کنید:`,
                 {
                     parse_mode: 'HTML',
                     reply_markup: {
                         inline_keyboard: [[
-                            { text: '🎮 ادامه بازی', web_app: { url: creatorUrl } }
+                            { text: '🔐 ثبت کلمه مخفی', web_app: { url: creatorUrl } }
                         ]]
                     }
                 }
@@ -342,9 +353,10 @@ class WordGameBot {
 
 ✨ <b>ویژگی‌ها:</b>
 • 👥 بازی دو نفره آنلاین
-• 🗂️ ۶ دسته‌بندی مختلف  
-• 💡 سیستم راهنمایی
+• 🔤 پشتیبانی از فارسی و انگلیسی
+• 💡 سیستم راهنمایی هوشمند
 • 🏆 امتیازدهی پیشرفته
+• ⚡ رابط کاربری زیبا
 
 برای شروع یکی از گزینه‌های زیر را انتخاب کنید:
         `.trim();
@@ -379,6 +391,14 @@ class WordGameBot {
                         `مثال:\n<code>/join ABC123</code>`,
                         { parse_mode: 'HTML' }
                     );
+                }
+            }
+            else if (text.startsWith('/cancel')) {
+                const parts = text.split(' ');
+                if (parts.length === 2) {
+                    await this.cancelGame(parts[1].toUpperCase(), 'بازی توسط سازنده لغو شد');
+                } else {
+                    await bot.sendMessage(chatId, 'لطفاً کد بازی را وارد کنید: /cancel کد_بازی');
                 }
             }
             else {
@@ -420,30 +440,28 @@ class WordGameBot {
                         break;
 
                     case 'stats':
-                        await bot.sendMessage(chatId,
-                            `📊 <b>آمار بازی</b>\n\n` +
-                            `👤 نام: ${firstName}\n` +
-                            `🎮 بازی‌های انجام شده: ۰\n` +
-                            `🏆 امتیاز کل: ۰\n` +
-                            `👥 بردهای دو نفره: ۰\n\n` +
-                            `💡 هنوز بازی نکرده‌اید!`,
-                            { parse_mode: 'HTML' }
-                        );
+                        const stats = await this.getUserStats(userId);
+                        await bot.sendMessage(chatId, stats, { parse_mode: 'HTML' });
                         break;
 
                     case 'help':
                         await bot.sendMessage(chatId,
                             `📖 <b>راهنمای بازی</b>\n\n` +
                             `🎯 <b>هدف بازی:</b>\n` +
-                            `حدس زدن کلمه مخفی\n\n` +
+                            `حدس زدن کلمه مخفی با کمترین تعداد حدس\n\n` +
                             `👥 <b>بازی دو نفره:</b>\n` +
-                            `۱. یک بازی ایجاد کنید\n` +
+                            `۱. یک بازی ایجاد کنید (/create)\n` +
                             `۲. کد بازی را به دوستتان بدهید\n` +
-                            `۳. در صفحه بازی منتظر بمانید\n` +
-                            `۴. وقتی دوستتان پیوست، بازی شروع می‌شود\n\n` +
+                            `۳. دوستتان با /join کد_بازی می‌پیوندد\n` +
+                            `۴. شما کلمه مخفی را ثبت می‌کنید\n` +
+                            `۵. دوستتان حدس می‌زند\n\n` +
                             `💡 <b>راهنمایی:</b>\n` +
                             `• هر بازیکن ۲ بار می‌تواند راهنمایی بگیرد\n` +
-                            `• راهنمایی یک حرف تصادفی نشان می‌دهد`,
+                            `• راهنمایی یک حرف تصادفی نشان می‌دهد\n\n` +
+                            `🏆 <b>امتیازدهی:</b>\n` +
+                            `• حدس درست: +۱۰ امتیاز\n` +
+                            `• برنده شدن: +۵۰ امتیاز\n` +
+                            `• بازی تمام شده: +۲۰ امتیاز برای سازنده`,
                             { parse_mode: 'HTML' }
                         );
                         break;
@@ -454,18 +472,59 @@ class WordGameBot {
         }
     }
 
+    async getUserStats(userId) {
+        try {
+            const result = await this.db.query(`
+                SELECT totalscore, gamesplayed, bestscore, multiplayerwins, hintsused 
+                FROM users WHERE userid = $1
+            `, [userId]);
+
+            if (result.rows.length === 0) {
+                return `📊 <b>آمار بازی</b>\n\n👤 شما هنوز بازی نکرده‌اید!`;
+            }
+
+            const stats = result.rows[0];
+            return `
+📊 <b>آمار بازی شما</b>
+
+👤 نام: ${stats.firstname || 'کاربر'}
+🏆 امتیاز کل: ${stats.totalscore}
+🎮 بازی‌های انجام شده: ${stats.gamesplayed}
+⭐ بهترین امتیاز: ${stats.bestscore}
+👥 بردهای دو نفره: ${stats.multiplayerwins}
+💡 راهنماهای استفاده شده: ${stats.hintsused}
+            `.trim();
+        } catch (error) {
+            this.log(`❌ خطا در دریافت آمار: ${error.message}`);
+            return '❌ خطا در دریافت آمار';
+        }
+    }
+
     async loadActiveGames() {
         try {
             const result = await this.db.query(
-                "SELECT * FROM multiplayer_games WHERE status IN ('waiting', 'active')"
+                "SELECT * FROM multiplayer_games WHERE status IN ('waiting', 'waiting_for_word', 'active')"
             );
             
             for (const row of result.rows) {
                 const game = {
                     gameId: row.gameid,
                     creatorId: row.creatorid,
+                    creatorName: row.creatorname,
                     opponentId: row.opponentid,
+                    opponentName: row.opponentname,
+                    word: row.word,
+                    wordDisplay: row.worddisplay,
+                    guessedLetters: row.guessedletters || [],
+                    attemptsLeft: row.attemptsleft || 6,
+                    maxAttempts: row.maxattempts || 6,
+                    hintsUsedCreator: row.hintsusedcreator || 0,
+                    hintsUsedOpponent: row.hintsusedopponent || 0,
+                    maxHints: row.maxhints || 2,
                     status: row.status,
+                    currentTurn: row.currentturn || 'creator',
+                    creatorScore: row.creatorscore || 0,
+                    opponentScore: row.opponentscore || 0,
                     createdAt: row.createdat
                 };
                 this.activeGames.set(row.gameid, game);
@@ -481,49 +540,85 @@ class WordGameBot {
         }
     }
 
-    async start() {
-        await this.connectDB();
-
-        // Routes
+    // API Routes
+    setupRoutes() {
+        // صفحه اصلی
         app.get('/', (req, res) => {
             res.send(`
                 <!DOCTYPE html>
-                <html>
+                <html dir="rtl" lang="fa">
                 <head>
-                    <title>بازی حدس کلمه</title>
+                    <title>بازی حدس کلمه - Wordly</title>
                     <meta charset="utf-8">
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
                     <style>
                         body { 
-                            font-family: Tahoma; 
+                            font-family: Tahoma, Arial, sans-serif; 
                             text-align: center; 
                             padding: 50px; 
                             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
                             color: white; 
+                            margin: 0;
                         }
                         .container { 
                             max-width: 500px; 
                             margin: 0 auto; 
                             background: rgba(255,255,255,0.1); 
-                            padding: 30px; 
-                            border-radius: 15px; 
+                            padding: 40px; 
+                            border-radius: 20px; 
+                            backdrop-filter: blur(10px);
+                            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
                         }
-                        h1 { font-size: 2.5em; margin-bottom: 20px; }
+                        h1 { 
+                            font-size: 2.5em; 
+                            margin-bottom: 20px; 
+                            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+                        }
+                        .btn {
+                            display: inline-block;
+                            background: linear-gradient(45deg, #FF6B6B, #FF8E53);
+                            color: white;
+                            padding: 15px 30px;
+                            border-radius: 50px;
+                            text-decoration: none;
+                            font-weight: bold;
+                            margin: 10px;
+                            transition: transform 0.3s ease;
+                        }
+                        .btn:hover {
+                            transform: translateY(-3px);
+                        }
+                        .features {
+                            text-align: right;
+                            margin: 30px 0;
+                        }
+                        .feature {
+                            margin: 10px 0;
+                            padding: 10px;
+                            background: rgba(255,255,255,0.1);
+                            border-radius: 10px;
+                        }
                     </style>
                 </head>
                 <body>
                     <div class="container">
                         <h1>🎮 بازی حدس کلمه</h1>
+                        <p>یک بازی دو نفره جذاب و سرگرم کننده</p>
+                        
+                        <div class="features">
+                            <div class="feature">👥 بازی دو نفره آنلاین</div>
+                            <div class="feature">🔤 پشتیبانی از فارسی و انگلیسی</div>
+                            <div class="feature">💡 سیستم راهنمایی هوشمند</div>
+                            <div class="feature">🏆 امتیازدهی پیشرفته</div>
+                            <div class="feature">⚡ رابط کاربری زیبا</div>
+                        </div>
+                        
                         <p>برای استفاده از بازی، لطفاً از طریق ربات تلگرام اقدام کنید:</p>
-                        <p><a href="https://t.me/your_bot_username" style="color: white; font-weight: bold;">@your_bot_username</a></p>
+                        <a href="https://t.me/WordlyGameBot" class="btn">شروع بازی در تلگرام</a>
                     </div>
                 </body>
                 </html>
             `);
-        });
-
-        // سرو کردن فایل game.html
-        app.get('/game.html', (req, res) => {
-            res.sendFile(path.join(__dirname, 'public', 'game.html'));
         });
 
         // API برای وضعیت بازی
@@ -546,20 +641,22 @@ class WordGameBot {
                     game = {
                         gameId: row.gameid,
                         creatorId: row.creatorid,
+                        creatorName: row.creatorname,
                         opponentId: row.opponentid,
-                        category: row.category,
+                        opponentName: row.opponentname,
                         word: row.word,
-                        wordLength: row.wordlength,
-                        currentState: row.currentwordstate,
-                        guessedLetters: JSON.parse(row.guessedletters || '[]'),
-                        attempts: row.attempts || 0,
+                        wordDisplay: row.worddisplay,
+                        guessedLetters: row.guessedletters || [],
+                        attemptsLeft: row.attemptsleft || 6,
                         maxAttempts: row.maxattempts || 6,
-                        hintsUsed: row.hintsused || 0,
+                        hintsUsedCreator: row.hintsusedcreator || 0,
+                        hintsUsedOpponent: row.hintsusedopponent || 0,
                         maxHints: row.maxhints || 2,
                         status: row.status,
-                        winnerId: row.winnerid,
+                        currentTurn: row.currentturn || 'creator',
                         creatorScore: row.creatorscore || 0,
-                        opponentScore: row.opponentscore || 0
+                        opponentScore: row.opponentscore || 0,
+                        createdAt: row.createdat
                     };
                     this.activeGames.set(gameId, game);
                 }
@@ -568,33 +665,6 @@ class WordGameBot {
                 
             } catch (error) {
                 this.log(`❌ خطا در دریافت بازی: ${error.message}`);
-                res.status(500).json({ success: false, error: 'خطای سرور' });
-            }
-        });
-
-        // API برای انتخاب دسته‌بندی
-        app.post('/api/game/:gameId/category', async (req, res) => {
-            try {
-                const { gameId } = req.params;
-                const { userId, category } = req.body;
-
-                const game = this.activeGames.get(gameId);
-                if (!game || game.creatorId != userId) {
-                    return res.status(403).json({ success: false, error: 'دسترسی غیرمجاز' });
-                }
-
-                await this.db.query(
-                    'UPDATE multiplayer_games SET category = $1 WHERE gameid = $2',
-                    [category, gameId]
-                );
-
-                game.category = category;
-                this.activeGames.set(gameId, game);
-
-                res.json({ success: true, message: `دسته‌بندی "${category}" انتخاب شد` });
-
-            } catch (error) {
-                this.log(`❌ خطا در انتخاب دسته‌بندی: ${error.message}`);
                 res.status(500).json({ success: false, error: 'خطای سرور' });
             }
         });
@@ -610,27 +680,62 @@ class WordGameBot {
                     return res.status(403).json({ success: false, error: 'دسترسی غیرمجاز' });
                 }
 
-                if (word.length < 3 || word.length > 15) {
-                    return res.status(400).json({ success: false, error: 'کلمه باید ۳-۱۵ حرف باشد' });
+                if (!word || word.length < 3 || word.length > 15) {
+                    return res.status(400).json({ success: false, error: 'کلمه باید بین ۳ تا ۱۵ حرف باشد' });
                 }
 
-                if (!/^[آ-یa-z\s]+$/.test(word)) {
+                if (!/^[\u0600-\u06FFa-zA-Z\s]+$/.test(word)) {
                     return res.status(400).json({ success: false, error: 'کلمه باید شامل حروف فارسی، انگلیسی یا فاصله باشد' });
                 }
 
-                const currentState = word.split('').map(c => c === ' ' ? ' ' : '_').join('');
+                const wordDisplay = word.split('').map(c => c === ' ' ? ' ' : '_').join('');
 
                 await this.db.query(
-                    'UPDATE multiplayer_games SET word = $1, wordlength = $2, currentwordstate = $3 WHERE gameid = $4',
-                    [word, word.length, currentState, gameId]
+                    `UPDATE multiplayer_games SET 
+                     word = $1, 
+                     worddisplay = $2,
+                     status = 'active',
+                     currentturn = 'opponent'
+                     WHERE gameid = $3`,
+                    [word, wordDisplay, gameId]
                 );
 
+                // آپدیت حافظه
                 game.word = word;
-                game.wordLength = word.length;
-                game.currentState = currentState;
+                game.wordDisplay = wordDisplay;
+                game.status = 'active';
+                game.currentTurn = 'opponent';
                 this.activeGames.set(gameId, game);
 
-                res.json({ success: true, message: 'کلمه ثبت شد', wordLength: word.length });
+                // اطلاع به بازیکنان
+                if (game.opponentId) {
+                    await bot.sendMessage(game.opponentId,
+                        `🎯 <b>بازی شروع شد!</b>\n\n` +
+                        `سازنده کلمه را ثبت کرد.\n` +
+                        `🆔 کد بازی: <code>${gameId}</code>\n` +
+                        `📏 طول کلمه: ${word.length} حرف\n\n` +
+                        `نوبت شماست! حدس بزنید:`,
+                        {
+                            parse_mode: 'HTML',
+                            reply_markup: {
+                                inline_keyboard: [[
+                                    { 
+                                        text: '🎮 ادامه بازی', 
+                                        web_app: { 
+                                            url: `${WEB_APP_URL}/game.html?gameId=${gameId}&userId=${game.opponentId}&role=opponent` 
+                                        } 
+                                    }
+                                ]]
+                            }
+                        }
+                    );
+                }
+
+                res.json({ 
+                    success: true, 
+                    message: 'کلمه ثبت شد و بازی شروع شد',
+                    wordDisplay: wordDisplay
+                });
 
             } catch (error) {
                 this.log(`❌ خطا در ثبت کلمه: ${error.message}`);
@@ -645,79 +750,182 @@ class WordGameBot {
                 const { userId, guess } = req.body;
 
                 const game = this.activeGames.get(gameId);
-                if (!game || game.opponentId != userId) {
-                    return res.status(403).json({ success: false, error: 'دسترسی غیرمجاز' });
+                if (!game) {
+                    return res.status(404).json({ success: false, error: 'بازی یافت نشد' });
+                }
+
+                // بررسی نوبت
+                const userRole = game.creatorId == userId ? 'creator' : 
+                               game.opponentId == userId ? 'opponent' : null;
+                
+                if (!userRole) {
+                    return res.status(403).json({ success: false, error: 'شما در این بازی نیستید' });
+                }
+
+                if (game.currentTurn !== userRole) {
+                    return res.status(400).json({ success: false, error: 'اکنون نوبت شما نیست' });
                 }
 
                 // اعتبارسنجی حدس
-                if (guess.length !== 1 || !/^[آ-یa-z]$/.test(guess)) {
+                if (!guess || guess.length !== 1 || !/^[\u0600-\u06FFa-zA-Z]$/.test(guess)) {
                     return res.status(400).json({ success: false, error: 'لطفاً فقط یک حرف فارسی یا انگلیسی وارد کنید' });
                 }
 
-                let guessedLetters = game.guessedLetters || [];
-                if (guessedLetters.includes(guess)) {
+                const guessLower = guess.toLowerCase();
+                const wordLower = game.word.toLowerCase();
+
+                // بررسی تکراری نبودن حدس
+                if (game.guessedLetters.some(g => g.letter === guessLower)) {
                     return res.status(400).json({ success: false, error: 'این حرف قبلاً حدس زده شده است' });
                 }
 
                 // پردازش حدس
-                guessedLetters.push(guess);
-                const word = game.word;
-                let currentState = game.currentState || '_'.repeat(word.length);
-                let correctGuess = false;
-
-                let newWordState = '';
-                for (let i = 0; i < word.length; i++) {
-                    if (word[i] === guess || currentState[i] !== '_') {
-                        newWordState += word[i];
-                        if (word[i] === guess) correctGuess = true;
+                let correct = false;
+                let newWordDisplay = '';
+                
+                for (let i = 0; i < game.word.length; i++) {
+                    const currentChar = game.word[i];
+                    if (currentChar.toLowerCase() === guessLower) {
+                        newWordDisplay += currentChar;
+                        correct = true;
                     } else {
-                        newWordState += '_';
+                        newWordDisplay += game.wordDisplay[i] !== '_' ? game.wordDisplay[i] : '_';
                     }
                 }
 
-                const newAttempts = (game.attempts || 0) + (correctGuess ? 0 : 1);
+                // افزودن به حروف حدس زده شده
+                const newGuessedLetters = [...game.guessedLetters, { letter: guessLower, correct }];
+                
+                // محاسبه امتیاز و تغییر نوبت
+                let newAttemptsLeft = game.attemptsLeft;
+                let newCreatorScore = game.creatorScore;
+                let newOpponentScore = game.opponentScore;
+                let newCurrentTurn = game.currentTurn;
                 let newStatus = game.status;
 
+                if (correct) {
+                    // افزایش امتیاز بازیکن فعلی
+                    if (userRole === 'creator') {
+                        newCreatorScore += 10;
+                    } else {
+                        newOpponentScore += 10;
+                    }
+                    // نوبت تغییر نمی‌کند اگر حدس درست باشد
+                } else {
+                    newAttemptsLeft--;
+                    // تغییر نوبت در صورت حدس نادرست
+                    newCurrentTurn = userRole === 'creator' ? 'opponent' : 'creator';
+                }
+
                 // بررسی پایان بازی
-                if (newWordState === word) {
+                if (!newWordDisplay.includes('_')) {
                     newStatus = 'completed';
-                    await this.db.query(
-                        'UPDATE multiplayer_games SET winnerid = $1, opponentscore = 100, status = $2 WHERE gameid = $3',
-                        [userId, 'completed', gameId]
-                    );
-                } else if (newAttempts >= 6) {
+                    // امتیاز اضافی برای برنده
+                    if (userRole === 'creator') {
+                        newCreatorScore += 50;
+                    } else {
+                        newOpponentScore += 50;
+                    }
+                } else if (newAttemptsLeft <= 0) {
                     newStatus = 'completed';
-                    await this.db.query(
-                        'UPDATE multiplayer_games SET winnerid = $1, creatorscore = 50, status = $2 WHERE gameid = $3',
-                        [game.creatorId, 'completed', gameId]
-                    );
+                    // امتیاز برای سازنده وقتی بازی با اتمام حدس‌ها تمام شود
+                    newCreatorScore += 20;
                 }
 
                 // ذخیره در دیتابیس
                 await this.db.query(
                     `UPDATE multiplayer_games SET 
-                     attempts = $1, 
+                     worddisplay = $1,
                      guessedletters = $2,
-                     currentwordstate = $3,
-                     status = $4
-                     WHERE gameid = $5`,
-                    [newAttempts, JSON.stringify(guessedLetters), newWordState, newStatus, gameId]
+                     attemptsleft = $3,
+                     currentturn = $4,
+                     status = $5,
+                     creatorscore = $6,
+                     opponentscore = $7,
+                     updatedat = CURRENT_TIMESTAMP
+                     WHERE gameid = $8`,
+                    [newWordDisplay, JSON.stringify(newGuessedLetters), newAttemptsLeft, 
+                     newCurrentTurn, newStatus, newCreatorScore, newOpponentScore, gameId]
                 );
 
                 // آپدیت حافظه
-                game.attempts = newAttempts;
-                game.guessedLetters = guessedLetters;
-                game.currentState = newWordState;
+                game.wordDisplay = newWordDisplay;
+                game.guessedLetters = newGuessedLetters;
+                game.attemptsLeft = newAttemptsLeft;
+                game.currentTurn = newCurrentTurn;
                 game.status = newStatus;
+                game.creatorScore = newCreatorScore;
+                game.opponentScore = newOpponentScore;
                 this.activeGames.set(gameId, game);
+
+                // اطلاع به بازیکن دیگر
+                if (newStatus === 'active') {
+                    const otherPlayerId = newCurrentTurn === 'creator' ? game.creatorId : game.opponentId;
+                    await bot.sendMessage(otherPlayerId,
+                        `🔄 <b>نوبت شماست!</b>\n\n` +
+                        `${userRole === 'creator' ? 'سازنده' : 'حریف'} حرف "${guess}" را حدس زد.\n` +
+                        `نتیجه: ${correct ? '✅ درست' : '❌ نادرست'}\n\n` +
+                        `برای ادامه بازی کلیک کنید:`,
+                        {
+                            parse_mode: 'HTML',
+                            reply_markup: {
+                                inline_keyboard: [[
+                                    { 
+                                        text: '🎮 ادامه بازی', 
+                                        web_app: { 
+                                            url: `${WEB_APP_URL}/game.html?gameId=${gameId}&userId=${otherPlayerId}&role=${newCurrentTurn}` 
+                                        } 
+                                    }
+                                ]]
+                            }
+                        }
+                    );
+                }
+
+                // اطلاع پایان بازی
+                if (newStatus === 'completed') {
+                    const winner = !newWordDisplay.includes('_') ? userRole : 'creator';
+                    const winnerName = winner === 'creator' ? game.creatorName : game.opponentName;
+                    
+                    await bot.sendMessage(game.creatorId,
+                        `🏁 <b>بازی پایان یافت!</b>\n\n` +
+                        `🎉 برنده: ${winnerName}\n` +
+                        `📊 امتیاز نهایی:\n` +
+                        `• ${game.creatorName}: ${newCreatorScore}\n` +
+                        `• ${game.opponentName}: ${newOpponentScore}\n\n` +
+                        `کلمه: "${game.word}"`,
+                        { parse_mode: 'HTML' }
+                    );
+
+                    if (game.opponentId) {
+                        await bot.sendMessage(game.opponentId,
+                            `🏁 <b>بازی پایان یافت!</b>\n\n` +
+                            `🎉 برنده: ${winnerName}\n` +
+                            `📊 امتیاز نهایی:\n` +
+                            `• ${game.creatorName}: ${newCreatorScore}\n` +
+                            `• ${game.opponentName}: ${newOpponentScore}\n\n` +
+                            `کلمه: "${game.word}"`,
+                            { parse_mode: 'HTML' }
+                        );
+                    }
+
+                    // آپدیت آمار کاربران
+                    await this.updateUserStats(game.creatorId, newCreatorScore, winner === 'creator');
+                    if (game.opponentId) {
+                        await this.updateUserStats(game.opponentId, newOpponentScore, winner === 'opponent');
+                    }
+                }
 
                 res.json({ 
                     success: true,
-                    correct: correctGuess,
-                    currentWordState: newWordState,
-                    attemptsLeft: 6 - newAttempts,
+                    correct: correct,
+                    currentWordState: newWordDisplay,
+                    attemptsLeft: newAttemptsLeft,
                     gameCompleted: newStatus === 'completed',
-                    winner: newStatus === 'completed' ? (newWordState === word ? 'opponent' : 'creator') : null
+                    currentTurn: newCurrentTurn,
+                    creatorScore: newCreatorScore,
+                    opponentScore: newOpponentScore,
+                    guessedLetters: newGuessedLetters
                 });
 
             } catch (error) {
@@ -733,41 +941,129 @@ class WordGameBot {
                 const { userId } = req.body;
 
                 const game = this.activeGames.get(gameId);
-                if (!game || game.opponentId != userId) {
-                    return res.status(403).json({ success: false, error: 'دسترسی غیرمجاز' });
+                if (!game) {
+                    return res.status(404).json({ success: false, error: 'بازی یافت نشد' });
                 }
 
-                if (game.hintsUsed >= 2) {
+                // بررسی نقش کاربر
+                const userRole = game.creatorId == userId ? 'creator' : 
+                               game.opponentId == userId ? 'opponent' : null;
+                
+                if (!userRole) {
+                    return res.status(403).json({ success: false, error: 'شما در این بازی نیستید' });
+                }
+
+                // بررسی نوبت
+                if (game.currentTurn !== userRole) {
+                    return res.status(400).json({ success: false, error: 'اکنون نوبت شما نیست' });
+                }
+
+                // بررسی تعداد راهنماهای استفاده شده
+                const hintsUsed = userRole === 'creator' ? game.hintsUsedCreator : game.hintsUsedOpponent;
+                if (hintsUsed >= game.maxHints) {
                     return res.status(400).json({ success: false, error: 'شما تمام راهنمایی‌های خود را استفاده کرده‌اید' });
                 }
 
-                const word = game.word;
-                const guessedLetters = game.guessedLetters || [];
-                const availableLetters = [];
-
-                for (let char of word) {
-                    if (!guessedLetters.includes(char) && !availableLetters.includes(char)) {
-                        availableLetters.push(char);
+                // یافتن حروفی که هنوز فاش نشده‌اند
+                const hiddenLetters = [];
+                const wordLower = game.word.toLowerCase();
+                
+                for (let i = 0; i < game.word.length; i++) {
+                    const char = game.word[i].toLowerCase();
+                    if (char !== ' ' && game.wordDisplay[i] === '_' && !hiddenLetters.includes(char)) {
+                        hiddenLetters.push(char);
                     }
                 }
 
-                if (availableLetters.length === 0) {
-                    return res.status(400).json({ success: false, error: 'تمام حروف کلمه قبلاً حدس زده شده‌اند' });
+                if (hiddenLetters.length === 0) {
+                    return res.status(400).json({ success: false, error: 'تمام حروف کلمه قبلاً فاش شده‌اند' });
                 }
 
-                const hintLetter = availableLetters[Math.floor(Math.random() * availableLetters.length)];
+                // انتخاب یک حرف تصادفی
+                const hintLetter = hiddenLetters[Math.floor(Math.random() * hiddenLetters.length)];
 
+                // فاش کردن حرف در کلمه نمایشی
+                let newWordDisplay = '';
+                for (let i = 0; i < game.word.length; i++) {
+                    if (game.word[i].toLowerCase() === hintLetter) {
+                        newWordDisplay += game.word[i];
+                    } else {
+                        newWordDisplay += game.wordDisplay[i];
+                    }
+                }
+
+                // کاهش تعداد تلاش‌ها
+                const newAttemptsLeft = Math.max(0, game.attemptsLeft - 1);
+
+                // آپدیت تعداد راهنماهای استفاده شده
+                let newHintsUsedCreator = game.hintsUsedCreator;
+                let newHintsUsedOpponent = game.hintsUsedOpponent;
+                
+                if (userRole === 'creator') {
+                    newHintsUsedCreator++;
+                } else {
+                    newHintsUsedOpponent++;
+                }
+
+                // تغییر نوبت
+                const newCurrentTurn = userRole === 'creator' ? 'opponent' : 'creator';
+
+                // ذخیره در دیتابیس
                 await this.db.query(
-                    'UPDATE multiplayer_games SET hintsused = hintsused + 1 WHERE gameid = $1',
-                    [gameId]
+                    `UPDATE multiplayer_games SET 
+                     worddisplay = $1,
+                     attemptsleft = $2,
+                     hintsusedcreator = $3,
+                     hintsusedopponent = $4,
+                     currentturn = $5,
+                     updatedat = CURRENT_TIMESTAMP
+                     WHERE gameid = $6`,
+                    [newWordDisplay, newAttemptsLeft, newHintsUsedCreator, 
+                     newHintsUsedOpponent, newCurrentTurn, gameId]
                 );
 
-                game.hintsUsed = (game.hintsUsed || 0) + 1;
+                // آپدیت حافظه
+                game.wordDisplay = newWordDisplay;
+                game.attemptsLeft = newAttemptsLeft;
+                if (userRole === 'creator') {
+                    game.hintsUsedCreator = newHintsUsedCreator;
+                } else {
+                    game.hintsUsedOpponent = newHintsUsedOpponent;
+                }
+                game.currentTurn = newCurrentTurn;
+                this.activeGames.set(gameId, game);
+
+                // اطلاع به بازیکن دیگر
+                const otherPlayerId = newCurrentTurn === 'creator' ? game.creatorId : game.opponentId;
+                if (otherPlayerId) {
+                    await bot.sendMessage(otherPlayerId,
+                        `💡 <b>راهنمایی استفاده شد</b>\n\n` +
+                        `${userRole === 'creator' ? 'سازنده' : 'حریف'} از راهنمایی استفاده کرد.\n` +
+                        `🔄 نوبت شماست!\n\n` +
+                        `برای ادامه بازی کلیک کنید:`,
+                        {
+                            parse_mode: 'HTML',
+                            reply_markup: {
+                                inline_keyboard: [[
+                                    { 
+                                        text: '🎮 ادامه بازی', 
+                                        web_app: { 
+                                            url: `${WEB_APP_URL}/game.html?gameId=${gameId}&userId=${otherPlayerId}&role=${newCurrentTurn}` 
+                                        } 
+                                    }
+                                ]]
+                            }
+                        }
+                    );
+                }
 
                 res.json({ 
                     success: true,
                     hintLetter: hintLetter,
-                    hintsLeft: 2 - game.hintsUsed
+                    hintsLeft: game.maxHints - (userRole === 'creator' ? newHintsUsedCreator : newHintsUsedOpponent),
+                    attemptsLeft: newAttemptsLeft,
+                    currentTurn: newCurrentTurn,
+                    wordDisplay: newWordDisplay
                 });
 
             } catch (error) {
@@ -775,6 +1071,47 @@ class WordGameBot {
                 res.status(500).json({ success: false, error: 'خطای سرور' });
             }
         });
+
+        // API برای به روزرسانی آمار کاربران
+        app.post('/api/user/stats', async (req, res) => {
+            try {
+                const { userId, score, isWin } = req.body;
+                
+                await this.db.query(`
+                    UPDATE users SET 
+                    totalscore = totalscore + $1,
+                    gamesplayed = gamesplayed + 1,
+                    bestscore = GREATEST(bestscore, $1),
+                    multiplayerwins = multiplayerwins + $2
+                    WHERE userid = $3
+                `, [score, isWin ? 1 : 0, userId]);
+
+                res.json({ success: true });
+            } catch (error) {
+                this.log(`❌ خطا در به روزرسانی آمار: ${error.message}`);
+                res.status(500).json({ success: false, error: 'خطای سرور' });
+            }
+        });
+    }
+
+    async updateUserStats(userId, score, isWin) {
+        try {
+            await this.db.query(`
+                UPDATE users SET 
+                totalscore = totalscore + $1,
+                gamesplayed = gamesplayed + 1,
+                bestscore = GREATEST(bestscore, $1),
+                multiplayerwins = multiplayerwins + $2
+                WHERE userid = $3
+            `, [score, isWin ? 1 : 0, userId]);
+        } catch (error) {
+            this.log(`❌ خطا در به روزرسانی آمار کاربر: ${error.message}`);
+        }
+    }
+
+    async start() {
+        await this.connectDB();
+        this.setupRoutes();
 
         // راه‌اندازی سرور
         app.listen(PORT, () => {
