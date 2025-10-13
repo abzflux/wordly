@@ -698,72 +698,85 @@ class WordGameBot {
     }
 
     async handleWordInput(chatId, userId, text, gameId) {
-        try {
-            const game = this.activeMultiplayerGames.get(gameId);
-            
-            if (!game || game.creatorid !== userId) {
-                await bot.sendMessage(chatId, '❌ بازی یافت نشد یا شما سازنده این بازی نیستید.');
-                return;
-            }
+		try {
+			const game = this.activeMultiplayerGames.get(gameId);
 
-            if (game.status !== 'active') {
-                await bot.sendMessage(chatId, '❌ این بازی فعال نیست.');
-                return;
-            }
+			// بررسی وجود بازی و اینکه کاربر سازنده است
+			if (!game || game.creatorid !== userId) {
+				await bot.sendMessage(chatId, '❌ بازی یافت نشد یا شما سازنده این بازی نیستید.');
+				return;
+			}
 
-            const word = text.trim().toLowerCase();
-            if (word.length < 3 || word.length > 15) {
-                await bot.sendMessage(chatId, '❌ کلمه باید بین ۳ تا ۱۵ حرف باشد.');
-                return;
-            }
+			// بررسی وضعیت بازی
+			if (game.status !== 'active') {
+				await bot.sendMessage(chatId, '❌ این بازی فعال نیست.');
+				return;
+			}
 
-            if (!/^[آ-یa-z]+$/.test(word)) {
-                await bot.sendMessage(chatId, '❌ کلمه باید فقط شامل حروف فارسی یا انگلیسی باشد.');
-                return;
-            }
+			const word = text.trim().toLowerCase();
 
-            await this.db.query(
-                'UPDATE multiplayer_games SET word = $1, wordLength = $2, currentWordState = $3, lastActivity = CURRENT_TIMESTAMP WHERE gameId = $4',
-                [word, word.length, '_'.repeat(word.length), gameId]
-            );
+			// طول کلمه
+			if (word.length < 3 || word.length > 15) {
+				await bot.sendMessage(chatId, '❌ کلمه باید بین ۳ تا ۱۵ حرف باشد.');
+				return;
+			}
 
-            game.word = word;
-            game.wordlength = word.length;
-            game.currentwordstate = '_'.repeat(word.length);
-            this.activeMultiplayerGames.set(gameId, game);
+			// اجازه دادن به حروف فارسی، انگلیسی و فاصله
+			if (!/^[آ-یa-z\s]+$/.test(word)) {
+				await bot.sendMessage(chatId, '❌ کلمه باید شامل حروف فارسی، انگلیسی یا فاصله باشد.');
+				return;
+			}
 
-            await bot.sendMessage(chatId,
-                `✅ <b>کلمه مخفی ثبت شد!</b>\n\n` +
-                `📝 <b>کلمه:</b> ${'⬜'.repeat(word.length)}\n` +
-                `🗂️ <b>دسته‌بندی:</b> ${game.category}\n` +
-                `🔤 <b>تعداد حروف:</b> ${word.length}\n\n` +
-                `⏳ منتظر حدس بازیکن مقابل باشید...`,
-                { 
-                    parse_mode: 'HTML',
-                    ...this.createGameActionsMenu(gameId, true, true)
-                }
-            );
+			// ساخت currentWordState: فاصله‌ها همان space باقی می‌مانند
+			const currentWordState = word.split('').map(c => c === ' ' ? ' ' : '_').join('');
 
-            const opponentMessage = 
-                `🎯 <b>بازی شروع شد!</b>\n\n` +
-                `📝 <b>کلمه:</b> ${'⬜'.repeat(word.length)}\n` +
-                `🗂️ <b>دسته‌بندی:</b> ${game.category}\n` +
-                `🔤 <b>تعداد حروف:</b> ${word.length}\n` +
-                `🎮 <b>فرصت‌ها:</b> ۶\n` +
-                `💡 <b>راهنمایی:</b> ۲ بار\n\n` +
-                `💡 حروف را یکی یکی حدس بزنید...\n` +
-                `📝 مثال: "الف" یا "a"`;
+			// آپدیت دیتابیس
+			await this.db.query(
+				'UPDATE multiplayer_games SET word = $1, wordlength = $2, currentwordstate = $3, lastactivity = CURRENT_TIMESTAMP WHERE gameid = $4',
+				[word, word.length, currentWordState, gameId]
+			);
 
-            await bot.sendMessage(game.opponentid, opponentMessage, {
-                parse_mode: 'HTML',
-                ...this.createGameActionsMenu(gameId, false, true)
-            });
+			// آپدیت حافظه محلی
+			game.word = word;
+			game.wordlength = word.length;
+			game.currentwordstate = currentWordState;
+			this.activeMultiplayerGames.set(gameId, game);
 
-        } catch (error) {
-            this.log(`❌ خطا در ثبت کلمه: ${error.message}`);
-            await bot.sendMessage(chatId, '❌ خطا در ثبت کلمه. لطفاً دوباره تلاش کنید.');
-        }
-    }
+			// پیام به سازنده
+			await bot.sendMessage(chatId,
+				`✅ <b>کلمه مخفی ثبت شد!</b>\n\n` +
+				`📝 <b>کلمه:</b> ${'⬜'.repeat(word.length)}\n` +
+				`🗂️ <b>دسته‌بندی:</b> ${game.category || 'عمومی'}\n` +
+				`🔤 <b>تعداد حروف:</b> ${word.length}\n\n` +
+				`⏳ منتظر حدس بازیکن مقابل باشید...`,
+				{ 
+					parse_mode: 'HTML',
+					...this.createGameActionsMenu(gameId, true, true)
+				}
+			);
+
+			// پیام به بازیکن مقابل
+			const opponentMessage =
+				`🎯 <b>بازی شروع شد!</b>\n\n` +
+				`📝 <b>کلمه:</b> ${'⬜'.repeat(word.length)}\n` +
+				`🗂️ <b>دسته‌بندی:</b> ${game.category || 'عمومی'}\n` +
+				`🔤 <b>تعداد حروف:</b> ${word.length}\n` +
+				`🎮 <b>فرصت‌ها:</b> ۶\n` +
+				`💡 <b>راهنمایی:</b> ۲ بار\n\n` +
+				`💡 حروف را یکی یکی حدس بزنید...\n` +
+				`📝 مثال: "الف" یا "a"`;
+
+			await bot.sendMessage(game.opponentid, opponentMessage, {
+				parse_mode: 'HTML',
+				...this.createGameActionsMenu(gameId, false, true)
+			});
+
+		} catch (error) {
+			this.log(`❌ خطا در ثبت کلمه: ${error.message}`);
+			await bot.sendMessage(chatId, '❌ خطا در ثبت کلمه. لطفاً دوباره تلاش کنید.');
+		}
+	}
+
 
     async handleGuess(chatId, userId, text, gameId) {
         try {
