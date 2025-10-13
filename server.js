@@ -111,7 +111,7 @@ class WordGameBot {
 				)
 			`);
 
-			// جدول بازی‌های دو نفره (با lastactivity)
+			// جدول بازی‌های دو نفره
 			await this.db.query(`
 				CREATE TABLE IF NOT EXISTS multiplayer_games (
 					gameid VARCHAR(10) PRIMARY KEY,
@@ -130,12 +130,17 @@ class WordGameBot {
 					winnerid BIGINT,
 					creatorscore INTEGER DEFAULT 0,
 					opponentscore INTEGER DEFAULT 0,
-					lastactivity TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 					createdat TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 					updatedat TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 					FOREIGN KEY (creatorid) REFERENCES users(userid) ON DELETE CASCADE,
 					FOREIGN KEY (opponentid) REFERENCES users(userid) ON DELETE CASCADE
 				)
+			`);
+
+			// اضافه کردن ستون lastactivity اگر وجود نداره
+			await this.db.query(`
+				ALTER TABLE multiplayer_games
+				ADD COLUMN IF NOT EXISTS lastactivity TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 			`);
 
 			// جدول درخواست‌های راهنمایی
@@ -165,6 +170,7 @@ class WordGameBot {
 			console.error('Full error:', error);
 		}
 	}
+
 
 
     async loadActiveGames() {
