@@ -119,16 +119,8 @@ class WordGameBot {
 					opponentid BIGINT,
 					word VARCHAR(255),
 					wordlength INTEGER DEFAULT 0,
-					hints INTEGER DEFAULT 2,
-					hintsused INTEGER DEFAULT 0,
-					maxattempts INTEGER DEFAULT 6,
-					attempts INTEGER DEFAULT 0,
-					guessedletters TEXT,
-					currentwordstate VARCHAR(255),
 					status VARCHAR(20) CHECK (status IN ('waiting', 'active', 'completed', 'cancelled')) DEFAULT 'waiting',
 					winnerid BIGINT,
-					creatorscore INTEGER DEFAULT 0,
-					opponentscore INTEGER DEFAULT 0,
 					createdat TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 					updatedat TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 					FOREIGN KEY (creatorid) REFERENCES users(userid) ON DELETE CASCADE,
@@ -136,15 +128,23 @@ class WordGameBot {
 				)
 			`);
 
-			// اضافه کردن ستون‌های جدید اگر وجود ندارن
-			await this.db.query(`
-				ALTER TABLE multiplayer_games
-				ADD COLUMN IF NOT EXISTS lastactivity TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-			`);
-			await this.db.query(`
-				ALTER TABLE multiplayer_games
-				ADD COLUMN IF NOT EXISTS category VARCHAR(100) DEFAULT 'عمومی'
-			`);
+			// اضافه کردن تمام ستون‌های ضروری اگر وجود ندارن
+			const alterQueries = [
+				`ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS lastactivity TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP`,
+				`ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS category VARCHAR(100) DEFAULT 'عمومی'`,
+				`ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS hints INTEGER DEFAULT 2`,
+				`ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS hintsused INTEGER DEFAULT 0`,
+				`ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS maxattempts INTEGER DEFAULT 6`,
+				`ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS attempts INTEGER DEFAULT 0`,
+				`ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS guessedletters TEXT`,
+				`ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS currentwordstate VARCHAR(255)`,
+				`ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS creatorscore INTEGER DEFAULT 0`,
+				`ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS opponentscore INTEGER DEFAULT 0`
+			];
+
+			for (const query of alterQueries) {
+				await this.db.query(query);
+			}
 
 			// جدول درخواست‌های راهنمایی
 			await this.db.query(`
@@ -173,6 +173,7 @@ class WordGameBot {
 			console.error('Full error:', error);
 		}
 	}
+
 
 
 
