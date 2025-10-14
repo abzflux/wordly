@@ -58,7 +58,7 @@ class WordGameBot {
             this.log('✅ متصل به دیتابیس');
             
             await this.createTables();
-            await this.fixTableConstraints(); // رفع مشکل constraints
+            await this.fixTableConstraints();
             await this.loadActiveGames();
             
         } catch (error) {
@@ -84,7 +84,7 @@ class WordGameBot {
                 )
             `);
 
-            // ایجاد جدول بازی‌ها بدون constraint
+            // ایجاد جدول بازی‌ها
             await this.db.query(`
                 CREATE TABLE IF NOT EXISTS multiplayer_games (
                     gameid VARCHAR(10) PRIMARY KEY,
@@ -121,12 +121,9 @@ class WordGameBot {
                     ALTER TABLE multiplayer_games 
                     DROP CONSTRAINT IF EXISTS multiplayer_games_status_check
                 `);
-                this.log('✅ constraint قدیمی حذف شد');
-            } catch (error) {
-                // اگر constraint وجود نداشته باشد، خطا طبیعی است
-            }
+            } catch (error) {}
 
-            // اضافه کردن ستون‌های جدید اگر وجود ندارند
+            // اضافه کردن ستون‌های جدید
             const alterQueries = [
                 `ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS creatorname VARCHAR(255)`,
                 `ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS opponentname VARCHAR(255)`,
@@ -141,24 +138,11 @@ class WordGameBot {
             for (const query of alterQueries) {
                 try {
                     await this.db.query(query);
-                    this.log(`✅ اجرای دستور: ${query}`);
                 } catch (error) {
                     if (!error.message.includes('already exists')) {
-                        this.log(`⚠️ خطا در اجرای دستور: ${query} - ${error.message}`);
+                        this.log(`⚠️ خطا در اجرای دستور: ${query}`);
                     }
                 }
-            }
-
-            // اضافه کردن constraint جدید با وضعیت‌های مجاز
-            try {
-                await this.db.query(`
-                    ALTER TABLE multiplayer_games 
-                    ADD CONSTRAINT multiplayer_games_status_check 
-                    CHECK (status IN ('waiting', 'waiting_for_word', 'active', 'completed', 'cancelled'))
-                `);
-                this.log('✅ constraint جدید اضافه شد');
-            } catch (error) {
-                this.log(`⚠️ خطا در اضافه کردن constraint: ${error.message}`);
             }
 
             this.log('✅ مشکلات جدول برطرف شد');
@@ -208,7 +192,7 @@ class WordGameBot {
                 currentTurn: 'creator',
                 creatorScore: 0,
                 opponentScore: 0,
-                wordSetter: 'creator',
+                wordSetter: null, // هنوز کلمه تنظیم نشده
                 createdAt: new Date()
             };
 
@@ -246,16 +230,6 @@ class WordGameBot {
                     ]
                 }
             });
-
-            // ارسال راهنمای پیوستن
-            await bot.sendMessage(chatId,
-                `🔗 <b>برای پیوستن دوستان:</b>\n\n` +
-                `دستور زیر را برایشان ارسال کنید:\n` +
-                `<code>/join ${gameId}</code>\n\n` +
-                `یا کد زیر را به آنها بدهید:\n` +
-                `<code>${gameId}</code>`,
-                { parse_mode: 'HTML' }
-            );
 
             // تایمر لغو خودکار
             setTimeout(async () => {
@@ -300,7 +274,7 @@ class WordGameBot {
                 ON CONFLICT (userid) DO UPDATE SET firstname = $2
             `, [userId, firstName]);
 
-            // آپدیت بازی - استفاده از وضعیت مجاز
+            // آپدیت بازی
             await this.db.query(`
                 UPDATE multiplayer_games 
                 SET opponentid = $1, opponentname = $2, status = 'waiting_for_word'
@@ -576,7 +550,7 @@ class WordGameBot {
                     currentTurn: row.currentturn || 'creator',
                     creatorScore: row.creatorscore || 0,
                     opponentScore: row.opponentscore || 0,
-                    wordSetter: row.wordsetter || 'creator',
+                    wordSetter: row.wordsetter || null,
                     createdAt: row.createdat
                 };
                 this.activeGames.set(row.gameid, game);
@@ -625,7 +599,7 @@ class WordGameBot {
                         currentTurn: row.currentturn || 'creator',
                         creatorScore: row.creatorscore || 0,
                         opponentScore: row.opponentscore || 0,
-                        wordSetter: row.wordsetter || 'creator'
+                        wordSetter: row.wordsetter || null
                     };
                     this.activeGames.set(gameId, game);
                 }
@@ -670,7 +644,8 @@ class WordGameBot {
                      worddisplay = $2,
                      currentwordstate = $2,
                      status = 'active',
-                     currentturn = 'opponent'
+                     currentturn = 'opponent',
+                     wordsetter = 'creator'
                      WHERE gameid = $3`,
                     [word, wordDisplay, gameId]
                 );
@@ -679,7 +654,8 @@ class WordGameBot {
                 game.word = word;
                 game.wordDisplay = wordDisplay;
                 game.status = 'active';
-                game.currentTurn = 'opponent';
+                game.currentTurn = 'opponent'; // حریف شروع به حدس زدن می‌کند
+                game.wordSetter = 'creator';   // سازنده کلمه را تنظیم کرده
                 this.activeGames.set(gameId, game);
 
                 res.json({ 
@@ -719,13 +695,17 @@ class WordGameBot {
                     return res.status(400).json({ success: false, error: 'اکنون نوبت شما نیست' });
                 }
 
+                // بررسی اینکه آیا این کاربر کلمه را تنظیم کرده است
+                if (userRole === game.wordSetter) {
+                    return res.status(400).json({ success: false, error: 'شما کلمه را تنظیم کرده‌اید و نمی‌توانید حدس بزنید' });
+                }
+
                 // اعتبارسنجی حدس
                 if (!guess || guess.length !== 1 || !/^[\u0600-\u06FFa-zA-Z]$/.test(guess)) {
                     return res.status(400).json({ success: false, error: 'لطفاً فقط یک حرف فارسی یا انگلیسی وارد کنید' });
                 }
 
                 const guessLower = guess.toLowerCase();
-                const wordLower = game.word.toLowerCase();
 
                 // بررسی تکراری نبودن حدس
                 if (game.guessedLetters.some(g => g.letter === guessLower)) {
@@ -858,6 +838,11 @@ class WordGameBot {
                     return res.status(400).json({ success: false, error: 'اکنون نوبت شما نیست' });
                 }
 
+                // بررسی اینکه آیا این کاربر کلمه را تنظیم کرده است
+                if (userRole === game.wordSetter) {
+                    return res.status(400).json({ success: false, error: 'شما کلمه را تنظیم کرده‌اید و نمی‌توانید راهنمایی بگیرید' });
+                }
+
                 // بررسی تعداد راهنماهای استفاده شده
                 const hintsUsed = userRole === 'creator' ? game.hintsUsedCreator : game.hintsUsedOpponent;
                 if (hintsUsed >= game.maxHints) {
@@ -866,7 +851,6 @@ class WordGameBot {
 
                 // یافتن حروفی که هنوز فاش نشده‌اند
                 const hiddenLetters = [];
-                const wordLower = game.word.toLowerCase();
                 
                 for (let i = 0; i < game.word.length; i++) {
                     const char = game.word[i].toLowerCase();
