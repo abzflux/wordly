@@ -17,7 +17,7 @@ if (process.env.TELEGRAM_TOKEN) {
         console.log('✅ Bot initialized with polling');
         
         // Web App URL - حالا از همین سرور استفاده می‌کنیم
-        const WEB_APP_URL = `https://${process.env.RENDER_EXTERNAL_HOSTNAME || 'your-app.onrender.com'}`;
+        const WEB_APP_URL = `https://${process.env.RENDER_EXTERNAL_HOSTNAME || 'wordlybot.onrender.com'}`;
 
         // Start command
         bot.onText(/\/start/, (msg) => {
