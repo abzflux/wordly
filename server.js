@@ -30,7 +30,6 @@ class WordGameBot {
         this.db = null;
         this.dbConnected = false;
         this.activeGames = new Map();
-        this.waitingGames = new Map();
         
         console.log('🎮 ربات بازی حدس کلمه راه‌اندازی شد');
     }
@@ -58,7 +57,6 @@ class WordGameBot {
             this.log('✅ متصل به دیتابیس');
             
             await this.createTables();
-            await this.alterTables(); // اضافه کردن ستون‌های جدید
             await this.loadActiveGames();
             
         } catch (error) {
@@ -84,24 +82,27 @@ class WordGameBot {
                 )
             `);
 
-            // ایجاد جدول بازی‌ها با ساختار جدید
+            // ایجاد جدول بازی‌ها
             await this.db.query(`
                 CREATE TABLE IF NOT EXISTS multiplayer_games (
                     gameid VARCHAR(10) PRIMARY KEY,
                     creatorid BIGINT NOT NULL,
+                    creatorname VARCHAR(255),
                     opponentid BIGINT,
+                    opponentname VARCHAR(255),
                     word VARCHAR(255),
-                    wordlength INTEGER DEFAULT 0,
-                    currentwordstate VARCHAR(255),
-                    guessedletters TEXT DEFAULT '[]',
-                    attempts INTEGER DEFAULT 0,
+                    worddisplay VARCHAR(255),
+                    guessedletters JSONB DEFAULT '[]',
+                    attemptsleft INTEGER DEFAULT 6,
                     maxattempts INTEGER DEFAULT 6,
-                    hintsused INTEGER DEFAULT 0,
+                    hintsusedcreator INTEGER DEFAULT 0,
+                    hintsusedopponent INTEGER DEFAULT 0,
                     maxhints INTEGER DEFAULT 2,
                     status VARCHAR(20) DEFAULT 'waiting',
-                    winnerid BIGINT,
+                    currentturn VARCHAR(20) DEFAULT 'creator',
                     creatorscore INTEGER DEFAULT 0,
                     opponentscore INTEGER DEFAULT 0,
+                    wordsetter VARCHAR(20) DEFAULT 'creator',
                     createdat TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updatedat TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -110,50 +111,6 @@ class WordGameBot {
             this.log('✅ جداول دیتابیس آماده');
         } catch (error) {
             this.log(`❌ خطا در ایجاد جداول: ${error.message}`);
-        }
-    }
-
-    async alterTables() {
-        try {
-            // اضافه کردن ستون‌های جدید به جدول multiplayer_games
-            const alterQueries = [
-                // اضافه کردن ستون creatorname
-                `ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS creatorname VARCHAR(255)`,
-                
-                // اضافه کردن ستون opponentname
-                `ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS opponentname VARCHAR(255)`,
-                
-                // اضافه کردن ستون worddisplay
-                `ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS worddisplay VARCHAR(255)`,
-                
-                // اضافه کردن ستون attemptsleft
-                `ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS attemptsleft INTEGER DEFAULT 6`,
-                
-                // اضافه کردن ستون hintsusedcreator
-                `ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS hintsusedcreator INTEGER DEFAULT 0`,
-                
-                // اضافه کردن ستون hintsusedopponent
-                `ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS hintsusedopponent INTEGER DEFAULT 0`,
-                
-                // اضافه کردن ستون currentturn
-                `ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS currentturn VARCHAR(20) DEFAULT 'creator'`
-            ];
-
-            for (const query of alterQueries) {
-                try {
-                    await this.db.query(query);
-                    this.log(`✅ اجرای دستور: ${query}`);
-                } catch (error) {
-                    // اگر ستون از قبل وجود داشته باشد، این خطا طبیعی است
-                    if (!error.message.includes('already exists')) {
-                        this.log(`⚠️ خطا در اجرای دستور: ${query} - ${error.message}`);
-                    }
-                }
-            }
-
-            this.log('✅ ستون‌های جدید به جدول اضافه شدند');
-        } catch (error) {
-            this.log(`❌ خطا در اضافه کردن ستون‌ها: ${error.message}`);
         }
     }
 
@@ -173,11 +130,11 @@ class WordGameBot {
                 ON CONFLICT (userid) DO UPDATE SET firstname = $2
             `, [userId, firstName]);
 
-            // ایجاد بازی با ساختار جدید
+            // ایجاد بازی
             await this.db.query(`
                 INSERT INTO multiplayer_games 
-                (gameid, creatorid, creatorname, status, currentturn) 
-                VALUES ($1, $2, $3, 'waiting', 'creator')
+                (gameid, creatorid, creatorname, status) 
+                VALUES ($1, $2, $3, 'waiting')
             `, [gameId, userId, firstName]);
 
             const game = {
@@ -198,14 +155,14 @@ class WordGameBot {
                 currentTurn: 'creator',
                 creatorScore: 0,
                 opponentScore: 0,
+                wordSetter: 'creator', // سازنده کلمه را تنظیم می‌کند
                 createdAt: new Date()
             };
 
             this.activeGames.set(gameId, game);
-            this.waitingGames.set(userId, gameId);
 
             // ایجاد لینک بازی
-            const gameUrl = `${WEB_APP_URL}/game.html?gameId=${gameId}&userId=${userId}&role=creator`;
+            const gameUrl = `${WEB_APP_URL}game.html?gameId=${gameId}&userId=${userId}&role=creator`;
 
             const message = `
 🎮 <b>بازی جدید ایجاد شد!</b>
@@ -302,10 +259,9 @@ class WordGameBot {
             game.opponentName = firstName;
             game.status = 'waiting_for_word';
             this.activeGames.set(gameId, game);
-            this.waitingGames.delete(game.creatorId);
 
             // لینک بازی برای بازیکن دوم
-            const opponentUrl = `${WEB_APP_URL}/game.html?gameId=${gameId}&userId=${userId}&role=opponent`;
+            const opponentUrl = `${WEB_APP_URL}game.html?gameId=${gameId}&userId=${userId}&role=opponent`;
 
             // پیام به بازیکن دوم
             await bot.sendMessage(chatId, 
@@ -325,7 +281,7 @@ class WordGameBot {
             );
 
             // اطلاع به سازنده
-            const creatorUrl = `${WEB_APP_URL}/game.html?gameId=${gameId}&userId=${game.creatorId}&role=creator`;
+            const creatorUrl = `${WEB_APP_URL}game.html?gameId=${gameId}&userId=${game.creatorId}&role=creator`;
             await bot.sendMessage(game.creatorId,
                 `🎊 <b>بازیکن دوم پیوست!</b>\n\n` +
                 `👤 بازیکن: ${firstName}\n` +
@@ -368,7 +324,6 @@ class WordGameBot {
             }
 
             this.activeGames.delete(gameId);
-            this.waitingGames.delete(game.creatorId);
 
         } catch (error) {
             this.log(`❌ خطا در لغو بازی: ${error.message}`);
@@ -493,7 +448,7 @@ class WordGameBot {
                             `🎯 <b>هدف بازی:</b>\n` +
                             `حدس زدن کلمه مخفی با کمترین تعداد حدس\n\n` +
                             `👥 <b>بازی دو نفره:</b>\n` +
-                            `۱. یک بازی ایجاد کنید (/create)\n` +
+                            `۱. یک بازی ایجاد کنید\n` +
                             `۲. کد بازی را به دوستتان بدهید\n` +
                             `۳. دوستتان با /join کد_بازی می‌پیوندد\n` +
                             `۴. شما کلمه مخفی را ثبت می‌کنید\n` +
@@ -557,9 +512,9 @@ class WordGameBot {
                     opponentId: row.opponentid,
                     opponentName: row.opponentname,
                     word: row.word,
-                    wordDisplay: row.worddisplay || row.currentwordstate,
-                    guessedLetters: Array.isArray(row.guessedletters) ? row.guessedletters : JSON.parse(row.guessedletters || '[]'),
-                    attemptsLeft: row.attemptsleft || (6 - (row.attempts || 0)),
+                    wordDisplay: row.worddisplay,
+                    guessedLetters: row.guessedletters || [],
+                    attemptsLeft: row.attemptsleft || 6,
                     maxAttempts: row.maxattempts || 6,
                     hintsUsedCreator: row.hintsusedcreator || 0,
                     hintsUsedOpponent: row.hintsusedopponent || 0,
@@ -568,13 +523,10 @@ class WordGameBot {
                     currentTurn: row.currentturn || 'creator',
                     creatorScore: row.creatorscore || 0,
                     opponentScore: row.opponentscore || 0,
+                    wordSetter: row.wordsetter || 'creator',
                     createdAt: row.createdat
                 };
                 this.activeGames.set(row.gameid, game);
-                
-                if (row.status === 'waiting') {
-                    this.waitingGames.set(row.creatorid, row.gameid);
-                }
             }
             
             this.log(`✅ ${result.rows.length} بازی فعال بارگذاری شد`);
@@ -587,81 +539,7 @@ class WordGameBot {
     setupRoutes() {
         // صفحه اصلی
         app.get('/', (req, res) => {
-            res.send(`
-                <!DOCTYPE html>
-                <html dir="rtl" lang="fa">
-                <head>
-                    <title>بازی حدس کلمه - Wordly</title>
-                    <meta charset="utf-8">
-                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                    <style>
-                        body { 
-                            font-family: Tahoma, Arial, sans-serif; 
-                            text-align: center; 
-                            padding: 50px; 
-                            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
-                            color: white; 
-                            margin: 0;
-                        }
-                        .container { 
-                            max-width: 500px; 
-                            margin: 0 auto; 
-                            background: rgba(255,255,255,0.1); 
-                            padding: 40px; 
-                            border-radius: 20px; 
-                            backdrop-filter: blur(10px);
-                            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
-                        }
-                        h1 { 
-                            font-size: 2.5em; 
-                            margin-bottom: 20px; 
-                            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-                        }
-                        .btn {
-                            display: inline-block;
-                            background: linear-gradient(45deg, #FF6B6B, #FF8E53);
-                            color: white;
-                            padding: 15px 30px;
-                            border-radius: 50px;
-                            text-decoration: none;
-                            font-weight: bold;
-                            margin: 10px;
-                            transition: transform 0.3s ease;
-                        }
-                        .btn:hover {
-                            transform: translateY(-3px);
-                        }
-                        .features {
-                            text-align: right;
-                            margin: 30px 0;
-                        }
-                        .feature {
-                            margin: 10px 0;
-                            padding: 10px;
-                            background: rgba(255,255,255,0.1);
-                            border-radius: 10px;
-                        }
-                    </style>
-                </head>
-                <body>
-                    <div class="container">
-                        <h1>🎮 بازی حدس کلمه</h1>
-                        <p>یک بازی دو نفره جذاب و سرگرم کننده</p>
-                        
-                        <div class="features">
-                            <div class="feature">👥 بازی دو نفره آنلاین</div>
-                            <div class="feature">🔤 پشتیبانی از فارسی و انگلیسی</div>
-                            <div class="feature">💡 سیستم راهنمایی هوشمند</div>
-                            <div class="feature">🏆 امتیازدهی پیشرفته</div>
-                            <div class="feature">⚡ رابط کاربری زیبا</div>
-                        </div>
-                        
-                        <p>برای استفاده از بازی، لطفاً از طریق ربات تلگرام اقدام کنید:</p>
-                        <a href="https://t.me/WordlyGameBot" class="btn">شروع بازی در تلگرام</a>
-                    </div>
-                </body>
-                </html>
-            `);
+            res.sendFile(path.join(__dirname, 'public', 'index.html'));
         });
 
         // API برای وضعیت بازی
@@ -688,9 +566,9 @@ class WordGameBot {
                         opponentId: row.opponentid,
                         opponentName: row.opponentname,
                         word: row.word,
-                        wordDisplay: row.worddisplay || row.currentwordstate,
-                        guessedLetters: Array.isArray(row.guessedletters) ? row.guessedletters : JSON.parse(row.guessedletters || '[]'),
-                        attemptsLeft: row.attemptsleft || (6 - (row.attempts || 0)),
+                        wordDisplay: row.worddisplay,
+                        guessedLetters: row.guessedletters || [],
+                        attemptsLeft: row.attemptsleft || 6,
                         maxAttempts: row.maxattempts || 6,
                         hintsUsedCreator: row.hintsusedcreator || 0,
                         hintsUsedOpponent: row.hintsusedopponent || 0,
@@ -699,7 +577,7 @@ class WordGameBot {
                         currentTurn: row.currentturn || 'creator',
                         creatorScore: row.creatorscore || 0,
                         opponentScore: row.opponentscore || 0,
-                        createdAt: row.createdat
+                        wordSetter: row.wordsetter || 'creator'
                     };
                     this.activeGames.set(gameId, game);
                 }
@@ -719,8 +597,13 @@ class WordGameBot {
                 const { userId, word } = req.body;
 
                 const game = this.activeGames.get(gameId);
-                if (!game || game.creatorId != userId) {
-                    return res.status(403).json({ success: false, error: 'دسترسی غیرمجاز' });
+                if (!game) {
+                    return res.status(404).json({ success: false, error: 'بازی یافت نشد' });
+                }
+
+                // فقط سازنده می‌تواند کلمه را تنظیم کند
+                if (game.creatorId != userId) {
+                    return res.status(403).json({ success: false, error: 'فقط سازنده می‌تواند کلمه را تنظیم کند' });
                 }
 
                 if (!word || word.length < 3 || word.length > 15) {
@@ -737,9 +620,8 @@ class WordGameBot {
                     `UPDATE multiplayer_games SET 
                      word = $1, 
                      worddisplay = $2,
-                     currentwordstate = $2,
                      status = 'active',
-                     currentturn = 'opponent'
+                     currentturn = 'opponent'  // بعد از ثبت کلمه، نوبت حریف است
                      WHERE gameid = $3`,
                     [word, wordDisplay, gameId]
                 );
@@ -748,7 +630,7 @@ class WordGameBot {
                 game.word = word;
                 game.wordDisplay = wordDisplay;
                 game.status = 'active';
-                game.currentTurn = 'opponent';
+                game.currentTurn = 'opponent'; // حریف شروع به حدس زدن می‌کند
                 this.activeGames.set(gameId, game);
 
                 // اطلاع به بازیکنان
@@ -766,7 +648,7 @@ class WordGameBot {
                                     { 
                                         text: '🎮 ادامه بازی', 
                                         web_app: { 
-                                            url: `${WEB_APP_URL}/game.html?gameId=${gameId}&userId=${game.opponentId}&role=opponent` 
+                                            url: `${WEB_APP_URL}game.html?gameId=${gameId}&userId=${game.opponentId}&role=opponent` 
                                         } 
                                     }
                                 ]]
@@ -778,7 +660,8 @@ class WordGameBot {
                 res.json({ 
                     success: true, 
                     message: 'کلمه ثبت شد و بازی شروع شد',
-                    wordDisplay: wordDisplay
+                    wordDisplay: wordDisplay,
+                    currentTurn: 'opponent'
                 });
 
             } catch (error) {
@@ -798,7 +681,7 @@ class WordGameBot {
                     return res.status(404).json({ success: false, error: 'بازی یافت نشد' });
                 }
 
-                // بررسی نوبت
+                // بررسی نقش کاربر
                 const userRole = game.creatorId == userId ? 'creator' : 
                                game.opponentId == userId ? 'opponent' : null;
                 
@@ -806,6 +689,7 @@ class WordGameBot {
                     return res.status(403).json({ success: false, error: 'شما در این بازی نیستید' });
                 }
 
+                // بررسی نوبت - فقط کسی که باید حدس بزند می‌تواند حدس بزند
                 if (game.currentTurn !== userRole) {
                     return res.status(400).json({ success: false, error: 'اکنون نوبت شما نیست' });
                 }
@@ -854,10 +738,10 @@ class WordGameBot {
                     } else {
                         newOpponentScore += 10;
                     }
-                    // نوبت تغییر نمی‌کند اگر حدس درست باشد
+                    // اگر حدس درست بود، نوبت تغییر نمی‌کند (همان بازیکن ادامه می‌دهد)
                 } else {
                     newAttemptsLeft--;
-                    // تغییر نوبت در صورت حدس نادرست
+                    // اگر حدس نادرست بود، نوبت به بازیکن دیگر می‌رود
                     newCurrentTurn = userRole === 'creator' ? 'opponent' : 'creator';
                 }
 
@@ -872,15 +756,18 @@ class WordGameBot {
                     }
                 } else if (newAttemptsLeft <= 0) {
                     newStatus = 'completed';
-                    // امتیاز برای سازنده وقتی بازی با اتمام حدس‌ها تمام شود
-                    newCreatorScore += 20;
+                    // امتیاز برای کسی که کلمه را تنظیم کرده
+                    if (game.wordSetter === 'creator') {
+                        newCreatorScore += 20;
+                    } else {
+                        newOpponentScore += 20;
+                    }
                 }
 
                 // ذخیره در دیتابیس
                 await this.db.query(
                     `UPDATE multiplayer_games SET 
                      worddisplay = $1,
-                     currentwordstate = $1,
                      guessedletters = $2,
                      attemptsleft = $3,
                      currentturn = $4,
@@ -904,7 +791,7 @@ class WordGameBot {
                 this.activeGames.set(gameId, game);
 
                 // اطلاع به بازیکن دیگر
-                if (newStatus === 'active') {
+                if (newStatus === 'active' && newCurrentTurn !== userRole) {
                     const otherPlayerId = newCurrentTurn === 'creator' ? game.creatorId : game.opponentId;
                     if (otherPlayerId) {
                         await bot.sendMessage(otherPlayerId,
@@ -919,7 +806,7 @@ class WordGameBot {
                                         { 
                                             text: '🎮 ادامه بازی', 
                                             web_app: { 
-                                                url: `${WEB_APP_URL}/game.html?gameId=${gameId}&userId=${otherPlayerId}&role=${newCurrentTurn}` 
+                                                url: `${WEB_APP_URL}game.html?gameId=${gameId}&userId=${otherPlayerId}&role=${newCurrentTurn}` 
                                             } 
                                         }
                                     ]]
@@ -931,29 +818,20 @@ class WordGameBot {
 
                 // اطلاع پایان بازی
                 if (newStatus === 'completed') {
-                    const winner = !newWordDisplay.includes('_') ? userRole : 'creator';
+                    const winner = !newWordDisplay.includes('_') ? userRole : game.wordSetter;
                     const winnerName = winner === 'creator' ? game.creatorName : game.opponentName;
                     
-                    await bot.sendMessage(game.creatorId,
-                        `🏁 <b>بازی پایان یافت!</b>\n\n` +
+                    // اطلاع به همه بازیکنان
+                    const endMessage = `🏁 <b>بازی پایان یافت!</b>\n\n` +
                         `🎉 برنده: ${winnerName}\n` +
                         `📊 امتیاز نهایی:\n` +
                         `• ${game.creatorName}: ${newCreatorScore}\n` +
                         `• ${game.opponentName}: ${newOpponentScore}\n\n` +
-                        `کلمه: "${game.word}"`,
-                        { parse_mode: 'HTML' }
-                    );
+                        `کلمه: "${game.word}"`;
 
+                    await bot.sendMessage(game.creatorId, endMessage, { parse_mode: 'HTML' });
                     if (game.opponentId) {
-                        await bot.sendMessage(game.opponentId,
-                            `🏁 <b>بازی پایان یافت!</b>\n\n` +
-                            `🎉 برنده: ${winnerName}\n` +
-                            `📊 امتیاز نهایی:\n` +
-                            `• ${game.creatorName}: ${newCreatorScore}\n` +
-                            `• ${game.opponentName}: ${newOpponentScore}\n\n` +
-                            `کلمه: "${game.word}"`,
-                            { parse_mode: 'HTML' }
-                        );
+                        await bot.sendMessage(game.opponentId, endMessage, { parse_mode: 'HTML' });
                     }
 
                     // آپدیت آمار کاربران
@@ -1059,7 +937,6 @@ class WordGameBot {
                 await this.db.query(
                     `UPDATE multiplayer_games SET 
                      worddisplay = $1,
-                     currentwordstate = $1,
                      attemptsleft = $2,
                      hintsusedcreator = $3,
                      hintsusedopponent = $4,
@@ -1096,7 +973,7 @@ class WordGameBot {
                                     { 
                                         text: '🎮 ادامه بازی', 
                                         web_app: { 
-                                            url: `${WEB_APP_URL}/game.html?gameId=${gameId}&userId=${otherPlayerId}&role=${newCurrentTurn}` 
+                                            url: `${WEB_APP_URL}game.html?gameId=${gameId}&userId=${otherPlayerId}&role=${newCurrentTurn}` 
                                         } 
                                     }
                                 ]]
@@ -1140,6 +1017,9 @@ class WordGameBot {
                 res.status(500).json({ success: false, error: 'خطای سرور' });
             }
         });
+
+        // سرو کردن فایل‌های استاتیک
+        app.use(express.static('public'));
     }
 
     async updateUserStats(userId, score, isWin) {
