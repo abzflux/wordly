@@ -21,6 +21,9 @@ const pool = new Pool({
   }
 });
 
+// راه‌اندازی بات تلگرام
+const bot = new Telegraf('8408419647:AAGuoIwzH-_S0jXWshGs-jz4CCTJgc_tfdQ');
+
 // ایجاد جداول (فقط یک بار)
 async function createTables() {
   try {
@@ -77,9 +80,6 @@ async function createTables() {
     console.error('Error creating tables:', error);
   }
 }
-
-// راه‌اندازی بات تلگرام
-const bot = new Telegraf('8408419647:AAGuoIwzH-_S0jXWshGs-jz4CCTJgc_tfdQ');
 
 // ثبت کاربر جدید
 async function registerUser(ctx) {
@@ -173,7 +173,7 @@ function calculateScore(targetWord, correctLetters, wrongLetters, usedHints, tim
   const correctBonus = correctLetters.length * 10;
   const wrongPenalty = wrongLetters.length * 5;
   const hintPenalty = usedHints * 15;
-  const timePenalty = Math.floor(timeSpent / 10); // 1 امتیاز به ازای هر 10 ثانیه
+  const timePenalty = Math.floor(timeSpent / 10);
   
   return Math.max(0, baseScore + correctBonus - wrongPenalty - hintPenalty - timePenalty);
 }
@@ -265,7 +265,7 @@ bot.on('text', async (ctx) => {
     if (game) {
       // اطلاع به سازنده بازی
       try {
-        await bot.telegram.sendMessage(
+        await ctx.telegram.sendMessage(
           game.creator_id,
           `🎉 کاربر ${ctx.from.first_name} به بازی شما پیوست!\n\n` +
           `برای شروع بازی به لینک زیر مراجعه کنید:\n` +
@@ -528,15 +528,38 @@ app.get('/api/game/:code/guesses', async (req, res) => {
   }
 });
 
+// مسیر اصلی برای تست
+app.get('/', (req, res) => {
+  res.json({ 
+    message: 'Wordly Bot Server is running!',
+    status: 'OK',
+    timestamp: new Date().toISOString()
+  });
+});
+
 // راه‌اندازی سرور
 async function startServer() {
   await createTables();
   
-  bot.launch();
-  console.log('Bot started successfully');
+  // در Render از webhook استفاده می‌کنیم
+  if (process.env.NODE_ENV === 'production') {
+    const WEBHOOK_URL = `https://${process.env.RENDER_EXTERNAL_HOSTNAME}/telegram-webhook`;
+    
+    // تنظیم webhook
+    await bot.telegram.setWebhook(WEBHOOK_URL);
+    console.log('Webhook set to:', WEBHOOK_URL);
+    
+    // مسیر webhook برای تلگرام
+    app.use(bot.webhookCallback('/telegram-webhook'));
+  } else {
+    // در محیط توسعه از polling استفاده می‌کنیم
+    bot.launch();
+    console.log('Bot started in development mode (polling)');
+  }
 
   app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
+    console.log(`Available at: https://${process.env.RENDER_EXTERNAL_HOSTNAME || 'localhost:' + PORT}`);
   });
 }
 
