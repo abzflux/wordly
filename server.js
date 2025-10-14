@@ -9,6 +9,18 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.static('public'));
 
+// فعال کردن CORS
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 // اتصال به دیتابیس PostgreSQL
 const pool = new Pool({
   user: 'abolfazl',
@@ -533,7 +545,16 @@ app.get('/', (req, res) => {
   res.json({ 
     message: 'Wordly Bot Server is running!',
     status: 'OK',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    api: {
+      baseUrl: 'https://wordlybot.onrender.com',
+      endpoints: [
+        '/api/game/:code',
+        '/api/game/:code/guess',
+        '/api/game/:code/hint',
+        '/api/game/:code/guesses'
+      ]
+    }
   });
 });
 
@@ -541,30 +562,16 @@ app.get('/', (req, res) => {
 async function startServer() {
   await createTables();
   
-  // در Render از webhook استفاده می‌کنیم
-  if (process.env.NODE_ENV === 'production') {
-    const WEBHOOK_URL = `https://${process.env.RENDER_EXTERNAL_HOSTNAME}/telegram-webhook`;
-    
-    // تنظیم webhook
-    await bot.telegram.setWebhook(WEBHOOK_URL);
-    console.log('Webhook set to:', WEBHOOK_URL);
-    
-    // مسیر webhook برای تلگرام
-    app.use(bot.webhookCallback('/telegram-webhook'));
-  } else {
-    // در محیط توسعه از polling استفاده می‌کنیم
-    bot.launch();
-    console.log('Bot started in development mode (polling)');
-  }
-
-  app.listen(PORT, () => {
+  console.log('Server starting in production mode...');
+  
+  // فقط API routes فعال باشند - بات غیرفعال
+  console.log('Bot is disabled to prevent multiple instances');
+  
+  app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);
-    console.log(`Available at: https://${process.env.RENDER_EXTERNAL_HOSTNAME || 'localhost:' + PORT}`);
+    console.log(`Available at: https://wordlybot.onrender.com`);
+    console.log('API endpoints are ready!');
   });
 }
-
-// Graceful shutdown
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
 
 startServer();
