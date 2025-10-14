@@ -67,51 +67,46 @@ class WordGameBot {
         }
     }
 
-    async createTables() {
-        try {
-            // ایجاد جدول کاربران
-            await this.db.query(`
-                CREATE TABLE IF NOT EXISTS users (
-                    userid BIGINT PRIMARY KEY,
-                    firstname VARCHAR(255) NOT NULL,
-                    username VARCHAR(255),
-                    totalscore INTEGER DEFAULT 0,
-                    gamesplayed INTEGER DEFAULT 0,
-                    bestscore INTEGER DEFAULT 0,
-                    multiplayerwins INTEGER DEFAULT 0,
-                    hintsused INTEGER DEFAULT 0,
-                    createdat TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            `);
+    async ensureColumns() {
+		try {
+			// جدول users
+			await this.db.query(`
+				ALTER TABLE users
+					ADD COLUMN IF NOT EXISTS totalscore INTEGER DEFAULT 0,
+					ADD COLUMN IF NOT EXISTS gamesplayed INTEGER DEFAULT 0,
+					ADD COLUMN IF NOT EXISTS bestscore INTEGER DEFAULT 0,
+					ADD COLUMN IF NOT EXISTS multiplayerwins INTEGER DEFAULT 0,
+					ADD COLUMN IF NOT EXISTS hintsused INTEGER DEFAULT 0,
+					ADD COLUMN IF NOT EXISTS createdat TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+			`);
 
-            // ایجاد جدول بازی‌ها (ساختار پایه)
-            await this.db.query(`
-                CREATE TABLE IF NOT EXISTS multiplayer_games (
-                    gameid VARCHAR(10) PRIMARY KEY,
-                    creatorid BIGINT NOT NULL,
-                    opponentid BIGINT,
-                    word VARCHAR(255),
-                    wordlength INTEGER DEFAULT 0,
-                    currentwordstate VARCHAR(255),
-                    guessedletters TEXT DEFAULT '[]',
-                    attempts INTEGER DEFAULT 0,
-                    maxattempts INTEGER DEFAULT 6,
-                    hintsused INTEGER DEFAULT 0,
-                    maxhints INTEGER DEFAULT 2,
-                    status VARCHAR(20) DEFAULT 'waiting',
-                    winnerid BIGINT,
-                    creatorscore INTEGER DEFAULT 0,
-                    opponentscore INTEGER DEFAULT 0,
-                    createdat TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updatedat TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            `);
+			// جدول multiplayer_games
+			await this.db.query(`
+				ALTER TABLE multiplayer_games
+					ADD COLUMN IF NOT EXISTS creatorid BIGINT NOT NULL,
+					ADD COLUMN IF NOT EXISTS opponentid BIGINT,
+					ADD COLUMN IF NOT EXISTS word VARCHAR(255),
+					ADD COLUMN IF NOT EXISTS wordlength INTEGER DEFAULT 0,
+					ADD COLUMN IF NOT EXISTS currentwordstate VARCHAR(255),
+					ADD COLUMN IF NOT EXISTS guessedletters TEXT DEFAULT '[]',
+					ADD COLUMN IF NOT EXISTS attempts INTEGER DEFAULT 0,
+					ADD COLUMN IF NOT EXISTS maxattempts INTEGER DEFAULT 6,
+					ADD COLUMN IF NOT EXISTS hintsused INTEGER DEFAULT 0,
+					ADD COLUMN IF NOT EXISTS maxhints INTEGER DEFAULT 2,
+					ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'waiting',
+					ADD COLUMN IF NOT EXISTS winnerid BIGINT,
+					ADD COLUMN IF NOT EXISTS creatorscore INTEGER DEFAULT 0,
+					ADD COLUMN IF NOT EXISTS opponentscore INTEGER DEFAULT 0,
+					ADD COLUMN IF NOT EXISTS createdat TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+					ADD COLUMN IF NOT EXISTS updatedat TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+			`);
 
-            this.log('✅ جداول دیتابیس آماده');
-        } catch (error) {
-            this.log(`❌ خطا در ایجاد جداول: ${error.message}`);
-        }
-    }
+			this.log('✅ ستون‌های لازم به جداول اضافه شدند (در صورت عدم وجود)');
+		} catch (error) {
+			this.log(`❌ خطا در اضافه کردن ستون‌ها: ${error.message}`);
+		}
+	}
+
 
     async alterTables() {
         try {
