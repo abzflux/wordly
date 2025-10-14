@@ -40,12 +40,18 @@ const bot = new Telegraf(BOT_TOKEN);
 // وضعیت کاربران
 const userStates = new Map();
 
-// ایجاد جداول (فقط یک بار)
+// ایجاد جداول (با حذف جداول قدیمی)
 async function createTables() {
   try {
-    // جدول کاربران
+    // حذف جداول قدیمی اگر وجود دارند
+    await pool.query('DROP TABLE IF EXISTS guesses CASCADE');
+    await pool.query('DROP TABLE IF EXISTS games CASCADE');
+    await pool.query('DROP TABLE IF EXISTS web_users CASCADE');
+    await pool.query('DROP TABLE IF EXISTS users CASCADE');
+
+    // جدول کاربران تلگرام
     await pool.query(`
-      CREATE TABLE IF NOT EXISTS users (
+      CREATE TABLE users (
         id SERIAL PRIMARY KEY,
         telegram_id BIGINT UNIQUE NOT NULL,
         username VARCHAR(255),
@@ -58,7 +64,7 @@ async function createTables() {
 
     // جدول کاربران وب
     await pool.query(`
-      CREATE TABLE IF NOT EXISTS web_users (
+      CREATE TABLE web_users (
         id SERIAL PRIMARY KEY,
         user_id VARCHAR(50) UNIQUE NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -67,7 +73,7 @@ async function createTables() {
 
     // جدول بازی‌ها
     await pool.query(`
-      CREATE TABLE IF NOT EXISTS games (
+      CREATE TABLE games (
         id SERIAL PRIMARY KEY,
         code VARCHAR(10) UNIQUE NOT NULL,
         creator_id BIGINT NOT NULL REFERENCES users(telegram_id),
@@ -87,9 +93,9 @@ async function createTables() {
       )
     `);
 
-    // جدول حدس‌ها
+    // جدول حدس‌ها - ساختار جدید
     await pool.query(`
-      CREATE TABLE IF NOT EXISTS guesses (
+      CREATE TABLE guesses (
         id SERIAL PRIMARY KEY,
         game_id INTEGER REFERENCES games(id),
         user_type VARCHAR(10) NOT NULL,
@@ -101,7 +107,7 @@ async function createTables() {
       )
     `);
 
-    console.log('Tables created successfully');
+    console.log('All tables created successfully with new structure');
   } catch (error) {
     console.error('Error creating tables:', error);
   }
@@ -389,7 +395,7 @@ bot.hears('📋 بازی‌های فعال من', async (ctx) => {
     message += `   نقش: ${role}\n`;
     message += `   حریف: ${opponent}\n`;
     message += `   وضعیت: فعال\n`;
-    message += `   لینک بازی: https://wordlybot.ct.ws/game.html?game=${game.code}\n\n`;
+    message += `   لینک بازی: https://wordly.ct.ws/game.html?game=${game.code}\n\n`;
   });
 
   message += 'برای بازی کردن، روی لینک بازی کلیک کنید.';
@@ -482,7 +488,7 @@ bot.on('text', async (ctx) => {
           `⏰ زمان ایجاد: ${new Date().toLocaleTimeString('fa-IR')}\n\n` +
           `👥 منتظر پیوستن حریف باشید...\n\n` +
           `🔗 برای مشاهده بازی به لینک زیر مراجعه کنید:\n` +
-          `https://wordlybot.ct.ws/game.html?game=${game.code}\n\n` +
+          `https://wordly.ct.ws/game.html?game=${game.code}\n\n` +
           `📤 کد بازی را برای دوستان خود بفرستید!`,
           getMainMenu()
         );
@@ -517,7 +523,7 @@ bot.on('text', async (ctx) => {
             `👤 بازیکن جدید: ${ctx.from.first_name}\n` +
             `⏰ زمان پیوستن: ${new Date().toLocaleTimeString('fa-IR')}\n\n` +
             `🔗 برای شروع بازی به لینک زیر مراجعه کنید:\n` +
-            `https://wordlybot.ct.ws/game.html?game=${game.code}`
+            `https://wordly.ct.ws/game.html?game=${game.code}`
           );
         } catch (error) {
           console.error('Error notifying creator:', error);
@@ -530,7 +536,7 @@ bot.on('text', async (ctx) => {
           `🎯 تعداد حدس: ${game.max_attempts}\n` +
           `⏰ زمان شروع: ${new Date().toLocaleTimeString('fa-IR')}\n\n` +
           `🔗 برای شروع بازی به لینک زیر مراجعه کنید:\n` +
-          `https://wordlybot.ct.ws/game.html?game=${game.code}\n\n` +
+          `https://wordly.ct.ws/game.html?game=${game.code}\n\n` +
           `🎮 موفق باشید!`,
           getMainMenu()
         );
@@ -564,13 +570,263 @@ bot.on('text', async (ctx) => {
   );
 });
 
-// API Routes (همانند قبل)...
+// API Routes
+
+// دریافت اطلاعات بازی
+app.get('/api/game/:code', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT g.*, 
+             u1.username as creator_username,
+             u2.username as player_username
+      FROM games g
+      LEFT JOIN users u1 ON g.creator_id = u1.telegram_id
+      LEFT JOIN users u2 ON g.player_id = u2.telegram_id
+      WHERE g.code = $1
+    `, [req.params.code]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Game not found' });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error getting game:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ثبت حدس
+app.post('/api/game/:code/guess', async (req, res) => {
+  const { userId, guess } = req.body;
+  const gameCode = req.params.code;
+
+  try {
+    // ثبت کاربر وب اگر وجود ندارد
+    await registerWebUser(userId);
+
+    // دریافت اطلاعات بازی
+    const gameResult = await pool.query(
+      'SELECT * FROM games WHERE code = $1',
+      [gameCode]
+    );
+
+    if (gameResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Game not found' });
+    }
+
+    const game = gameResult.rows[0];
+    const targetWord = game.target_word;
+    const guessWord = guess.toLowerCase();
+
+    // بررسی اعتبار حدس
+    if (guessWord.length !== targetWord.length) {
+      return res.status(400).json({ error: 'طول کلمه حدس با کلمه هدف برابر نیست' });
+    }
+
+    // بررسی حروف تکراری
+    const guessedLetters = game.guessed_letters || [];
+    const newLetters = guessWord.split('').filter(letter => !guessedLetters.includes(letter));
+    
+    if (newLetters.length === 0) {
+      return res.status(400).json({ error: 'همه این حروف قبلاً حدس زده شده‌اند' });
+    }
+
+    // بررسی نتیجه حدس
+    const result = [];
+    let correctCount = 0;
+
+    for (let i = 0; i < targetWord.length; i++) {
+      if (guessWord[i] === targetWord[i]) {
+        result.push({ letter: guessWord[i], status: 'correct', position: i });
+        correctCount++;
+      } else if (targetWord.includes(guessWord[i])) {
+        result.push({ letter: guessWord[i], status: 'wrong-position', position: i });
+      } else {
+        result.push({ letter: guessWord[i], status: 'wrong', position: i });
+      }
+    }
+
+    // به‌روزرسانی بازی
+    const newGuessedLetters = [...new Set([...guessedLetters, ...guessWord.split('')])];
+    const newCorrectLetters = [...new Set([...(game.correct_letters || []), ...guessWord.split('').filter((letter, i) => letter === targetWord[i])])];
+
+    await pool.query(
+      `UPDATE games 
+       SET current_attempt = current_attempt + 1,
+           guessed_letters = $1,
+           correct_letters = $2
+       WHERE code = $3`,
+      [newGuessedLetters, newCorrectLetters, gameCode]
+    );
+
+    // ثبت حدس با نوع کاربر وب
+    await pool.query(
+      `INSERT INTO guesses (game_id, user_type, user_identifier, guess_word, guess_result, attempt_number)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [game.id, 'web', userId, guessWord, { result }, game.current_attempt + 1]
+    );
+
+    // بررسی پایان بازی
+    let gameStatus = game.game_status;
+    let endTime = game.end_time;
+
+    if (correctCount === targetWord.length) {
+      gameStatus = 'completed';
+      endTime = new Date();
+      
+      // محاسبه امتیاز
+      const timeSpent = Math.floor((endTime - game.start_time) / 1000);
+      const wrongLetters = newGuessedLetters.filter(letter => !targetWord.includes(letter));
+      const score = calculateScore(targetWord, newCorrectLetters, wrongLetters, game.used_hints, timeSpent);
+
+      await pool.query(
+        `UPDATE games 
+         SET game_status = $1, end_time = $2, player_score = $3
+         WHERE code = $4`,
+        [gameStatus, endTime, score, gameCode]
+      );
+
+      // به‌روزرسانی امتیاز کاربر تلگرام (اگر بازی کننده از تلگرام است)
+      if (game.player_id) {
+        await pool.query(
+          'UPDATE users SET score = score + $1 WHERE telegram_id = $2',
+          [score, game.player_id]
+        );
+      }
+    } else if (game.current_attempt + 1 >= game.max_attempts) {
+      gameStatus = 'failed';
+      endTime = new Date();
+      
+      await pool.query(
+        `UPDATE games 
+         SET game_status = $1, end_time = $2
+         WHERE code = $3`,
+        [gameStatus, endTime, gameCode]
+      );
+    }
+
+    res.json({
+      result,
+      correctCount,
+      totalLetters: targetWord.length,
+      attemptsLeft: game.max_attempts - (game.current_attempt + 1),
+      gameStatus: gameStatus || game.game_status,
+      score: gameStatus === 'completed' ? calculateScore(targetWord, newCorrectLetters, 
+              newGuessedLetters.filter(letter => !targetWord.includes(letter)), 
+              game.used_hints, Math.floor((endTime - game.start_time) / 1000)) : 0
+    });
+
+  } catch (error) {
+    console.error('Error processing guess:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// درخواست راهنمایی
+app.post('/api/game/:code/hint', async (req, res) => {
+  const { userId } = req.body;
+  const gameCode = req.params.code;
+
+  try {
+    const gameResult = await pool.query(
+      'SELECT * FROM games WHERE code = $1',
+      [gameCode]
+    );
+
+    if (gameResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Game not found' });
+    }
+
+    const game = gameResult.rows[0];
+
+    // بررسی تعداد راهنمایی‌های استفاده شده
+    if (game.used_hints >= 2) {
+      return res.status(400).json({ error: 'حداکثر تعداد راهنمایی استفاده شده است' });
+    }
+
+    // پیدا کردن یک حرف تصادفی که هنوز حدس زده نشده
+    const targetWord = game.target_word;
+    const guessedLetters = game.guessed_letters || [];
+    const unguessedLetters = targetWord.split('').filter(letter => !guessedLetters.includes(letter));
+
+    if (unguessedLetters.length === 0) {
+      return res.status(400).json({ error: 'هیچ حرفی برای راهنمایی وجود ندارد' });
+    }
+
+    const randomHint = unguessedLetters[Math.floor(Math.random() * unguessedLetters.length)];
+    const hintPosition = targetWord.indexOf(randomHint);
+
+    // به‌روزرسانی تعداد راهنمایی‌ها
+    await pool.query(
+      'UPDATE games SET used_hints = used_hints + 1 WHERE code = $1',
+      [gameCode]
+    );
+
+    res.json({
+      hint: randomHint,
+      position: hintPosition,
+      hintsUsed: game.used_hints + 1,
+      hintsLeft: 2 - (game.used_hints + 1)
+    });
+
+  } catch (error) {
+    console.error('Error processing hint:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// دریافت تاریخچه حدس‌ها
+app.get('/api/game/:code/guesses', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT g.*, 
+             CASE 
+               WHEN g.user_type = 'telegram' THEN u.username 
+               ELSE 'بازیکن وب'
+             END as username
+      FROM guesses g 
+      LEFT JOIN users u ON g.user_identifier::bigint = u.telegram_id AND g.user_type = 'telegram'
+      WHERE g.game_id = (SELECT id FROM games WHERE code = $1)
+      ORDER BY g.attempt_number
+    `, [req.params.code]);
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error getting guesses:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// مسیر webhook برای تلگرام
+app.use(bot.webhookCallback('/telegram-webhook'));
+
+// مسیر اصلی برای تست
+app.get('/', (req, res) => {
+  res.json({ 
+    message: 'Wordly Bot Server is running!',
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    bot: 'Active with Webhook',
+    database: 'Fresh start with new structure',
+    api: {
+      baseUrl: 'https://wordlybot.onrender.com',
+      endpoints: [
+        '/api/game/:code',
+        '/api/game/:code/guess',
+        '/api/game/:code/hint',
+        '/api/game/:code/guesses'
+      ]
+    }
+  });
+});
 
 // راه‌اندازی سرور
 async function startServer() {
   await createTables();
   
   console.log('Server starting in production mode...');
+  console.log('Database tables have been reset with new structure!');
   
   // تنظیم webhook برای تلگرام
   const WEBHOOK_URL = `https://wordlybot.onrender.com/telegram-webhook`;
@@ -591,7 +847,7 @@ async function startServer() {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);
     console.log(`Available at: https://wordlybot.onrender.com`);
-    console.log('Bot is ready with full menu system!');
+    console.log('Bot is ready with full menu system and fresh database!');
   });
 }
 
