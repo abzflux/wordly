@@ -14,9 +14,14 @@ const PORT = process.env.PORT || 3000;
 // --- راه‌اندازی دیتابیس PostgreSQL ---
 const pool = new Pool({
     connectionString: DATABASE_URL,
+    // FIX START: تنظیمات SSL برای رفع خطای "Connection terminated unexpectedly"
     ssl: {
-        rejectUnauthorized: false // برای اتصال به دیتابیس‌های ابری (مانند Render) معمولاً لازم است
+        // اطمینان از اینکه SSL باید استفاده شود
+        require: true,
+        // اجازه دادن به گواهی‌های بدون اعتبار (خود امضا شده) که در محیط‌های ابری رایج است
+        rejectUnauthorized: false
     }
+    // FIX END
 });
 
 // اتصال و اطمینان از وجود جداول
