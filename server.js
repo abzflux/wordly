@@ -7,12 +7,11 @@ const cors = require('cors');
 const app = express();
 
 // تنظیمات
-const BOT_TOKEN = process.env.BOT_TOKEN || '8408419647:AAFivpMKAKSGoIWI0Qq8PJ_zrdhQK9wlJFo';;
+const BOT_TOKEN = process.env.BOT_TOKEN;
 const WEB_APP_URL = process.env.WEB_APP_URL || 'https://wordly.ct.ws';
 const RENDER_URL = process.env.RENDER_EXTERNAL_URL || 'https://wordly-bot.onrender.com';
 
 console.log('🔧 Starting server...');
-console.log('BOT_TOKEN:', BOT_TOKEN ? '✅ SET' : '❌ MISSING');
 
 // Middleware
 app.use(cors({
@@ -29,17 +28,6 @@ app.get('/', (req, res) => {
   res.json({
     message: '🎮 Wordly Game Server',
     status: 'active',
-    bot: BOT_TOKEN ? 'enabled' : 'disabled',
-    timestamp: new Date().toISOString()
-  });
-});
-
-// Route دیباگ
-app.get('/debug', (req, res) => {
-  res.json({
-    bot_status: BOT_TOKEN ? '✅ ACTIVE' : '❌ DISABLED',
-    web_app_url: WEB_APP_URL,
-    server_url: RENDER_URL,
     timestamp: new Date().toISOString()
   });
 });
@@ -61,19 +49,21 @@ const pool = new Pool({
   database: process.env.DB_NAME,
   port: process.env.DB_PORT,
   ssl: { rejectUnauthorized: false },
-  max: 10,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 10000,
 });
 
-// ایجاد جداول
+// ایجاد جداول با تنظیمات درست
 async function initializeDatabase() {
   try {
     await pool.query('SELECT 1');
     console.log('✅ Database connected');
 
+    // حذف جدول‌های قدیمی اگر وجود دارند
+    await pool.query('DROP TABLE IF EXISTS leaderboard CASCADE');
+    await pool.query('DROP TABLE IF EXISTS active_games CASCADE');
+
+    // ایجاد جدول بازی‌های فعال با DEFAULT value
     await pool.query(`
-      CREATE TABLE IF NOT EXISTS active_games (
+      CREATE TABLE active_games (
         game_id VARCHAR(20) PRIMARY KEY,
         creator_id BIGINT NOT NULL,
         creator_name VARCHAR(255) NOT NULL,
@@ -81,7 +71,7 @@ async function initializeDatabase() {
         opponent_name VARCHAR(255),
         word VARCHAR(50),
         category VARCHAR(100),
-        max_attempts INTEGER DEFAULT 0,
+        max_attempts INTEGER DEFAULT 10,
         current_attempt INTEGER DEFAULT 0,
         used_letters TEXT DEFAULT '',
         correct_letters TEXT DEFAULT '',
@@ -92,8 +82,9 @@ async function initializeDatabase() {
       )
     `);
 
+    // ایجاد جدول امتیازات
     await pool.query(`
-      CREATE TABLE IF NOT EXISTS leaderboard (
+      CREATE TABLE leaderboard (
         id SERIAL PRIMARY KEY,
         user_id BIGINT NOT NULL,
         user_name VARCHAR(255) NOT NULL,
@@ -108,32 +99,21 @@ async function initializeDatabase() {
       )
     `);
 
-    console.log('✅ Database initialized');
+    console.log('✅ Database tables created successfully');
   } catch (error) {
     console.error('❌ Database error:', error);
   }
 }
 
-// راه‌اندازی ربات تلگرام با Webhook
+// راه‌اندازی ربات تلگرام
 let bot;
 if (BOT_TOKEN) {
-  console.log('🤖 Initializing Telegram Bot with Webhook...');
+  console.log('🤖 Initializing Telegram Bot...');
   
   try {
     bot = new Telegraf(BOT_TOKEN);
 
-    // میدلور session
     bot.use(session());
-
-    // میدلور برای ذخیره اطلاعات کاربر
-    bot.use((ctx, next) => {
-      if (ctx.from) {
-        ctx.session = ctx.session || {};
-        ctx.session.userId = ctx.from.id;
-        ctx.session.username = ctx.from.first_name + (ctx.from.last_name ? ' ' + ctx.from.last_name : '');
-      }
-      return next();
-    });
 
     // دستور start
     bot.start((ctx) => {
@@ -153,13 +133,9 @@ if (BOT_TOKEN) {
     // نمایش جدول رده‌بندی
     bot.action('leaderboard', async (ctx) => {
       try {
-        console.log('📊 Leaderboard requested by:', ctx.from.first_name);
-        
         const result = await pool.query(`
-          SELECT user_name, score, played_at 
-          FROM leaderboard 
-          ORDER BY score DESC 
-          LIMIT 10
+          SELECT user_name, score FROM leaderboard 
+          ORDER BY score DESC LIMIT 10
         `);
         
         let leaderboardText = '🏆 10 نفر برتر:\n\n';
@@ -168,71 +144,34 @@ if (BOT_TOKEN) {
           leaderboardText += 'هنوز بازی‌ای ثبت نشده است.';
         } else {
           result.rows.forEach((row, index) => {
-            const date = new Date(row.played_at).toLocaleDateString('fa-IR');
             leaderboardText += `${index + 1}. ${row.user_name} - ${row.score} امتیاز\n`;
           });
         }
         
-        await ctx.reply(leaderboardText, Markup.inlineKeyboard([
-          [Markup.button.callback('🔙 بازگشت به منو', 'back_to_menu')]
-        ]));
+        await ctx.reply(leaderboardText);
       } catch (error) {
-        console.error('Error fetching leaderboard:', error);
         await ctx.reply('خطا در دریافت اطلاعات.');
       }
     });
 
     // راهنمای بازی
     bot.action('help', (ctx) => {
-      console.log('📖 Help requested by:', ctx.from.first_name);
-      
-      const helpText = `📖 راهنمای بازی Wordly:
+      const helpText = `📖 راهنمای بازی:
 
-🎮 نحوه بازی:
-1. روی "شروع بازی دو نفره" کلیک کنید
-2. لینک بازی را برای دوست خود بفرستید
-3. پس از پیوستن دوست، کلمه و دسته‌بندی را وارد کنید
-4. دوست شما باید کلمه را حدس بزند
+1. "شروع بازی دو نفره" را بزنید
+2. لینک را برای دوست خود بفرستید
+3. کلمه و دسته‌بندی را وارد کنید
+4. دوست شما کلمه را حدس می‌زند`;
 
-🎯 تعداد حدس: 1.5 برابر تعداد حروف کلمه
-💡 راهنما: حداکثر ۲ بار (۱۵- امتیاز)
-🏆 امتیاز: بر اساس سرعت و دقت`;
-
-      return ctx.reply(helpText, Markup.inlineKeyboard([
-        [Markup.button.callback('🔙 بازگشت به منو', 'back_to_menu')]
-      ]));
+      return ctx.reply(helpText);
     });
 
-    // بازگشت به منوی اصلی
-    bot.action('back_to_menu', (ctx) => {
-      ctx.deleteMessage().catch(() => {});
-      ctx.reply('منوی اصلی:', Markup.inlineKeyboard([
-        [Markup.button.webApp('🎮 شروع بازی دو نفره', `${WEB_APP_URL}/game.html`)],
-        [Markup.button.callback('🏆 جدول رده‌بندی', 'leaderboard')],
-        [Markup.button.callback('ℹ️ راهنما', 'help')]
-      ]));
+    // استفاده از Polling به جای Webhook
+    bot.launch({
+      webhook: false
+    }).then(() => {
+      console.log('✅ Telegram Bot started with Polling');
     });
-
-    // تنظیم Webhook
-    const setupWebhook = async () => {
-      try {
-        const webhookUrl = `${RENDER_URL}/telegram-webhook`;
-        await bot.telegram.setWebhook(webhookUrl);
-        console.log(`✅ Webhook set to: ${webhookUrl}`);
-      } catch (error) {
-        console.error('❌ Webhook setup failed:', error);
-      }
-    };
-
-    // Route برای Webhook
-    app.post('/telegram-webhook', (req, res) => {
-      bot.handleUpdate(req.body, res);
-    });
-
-    // راه‌اندازی Webhook
-    setupWebhook();
-
-    console.log('✅ Telegram Bot ready with Webhook');
 
   } catch (error) {
     console.error('❌ Bot initialization failed:', error);
@@ -241,7 +180,7 @@ if (BOT_TOKEN) {
   console.log('⚠️ Bot is disabled - BOT_TOKEN not set');
 }
 
-// API Routes
+// API ایجاد بازی - اصلاح شده
 app.post('/api/create-game', async (req, res) => {
   console.log('📝 Creating game...', req.body);
   
@@ -257,6 +196,7 @@ app.post('/api/create-game', async (req, res) => {
 
     const gameId = Math.random().toString(36).substring(2, 8).toUpperCase();
     
+    // استفاده از مقدار DEFAULT برای max_attempts
     await pool.query(
       'INSERT INTO active_games (game_id, creator_id, creator_name) VALUES ($1, $2, $3)',
       [gameId, userId, userName]
@@ -272,11 +212,12 @@ app.post('/api/create-game', async (req, res) => {
     console.error('❌ Error creating game:', error);
     res.status(500).json({ 
       success: false, 
-      error: 'خطا در ایجاد بازی' 
+      error: 'خطا در ایجاد بازی: ' + error.message 
     });
   }
 });
 
+// API پیوستن به بازی
 app.post('/api/join-game', async (req, res) => {
   console.log('🔗 Joining game...', req.body);
   
@@ -310,6 +251,7 @@ app.post('/api/join-game', async (req, res) => {
   }
 });
 
+// API تنظیم کلمه
 app.post('/api/set-word', async (req, res) => {
   console.log('📝 Setting word...', req.body);
   
@@ -352,6 +294,7 @@ app.post('/api/set-word', async (req, res) => {
   }
 });
 
+// API ثبت حدس
 app.post('/api/make-guess', async (req, res) => {
   console.log('🎯 Making guess...', req.body);
   
@@ -440,6 +383,7 @@ app.post('/api/make-guess', async (req, res) => {
   }
 });
 
+// API استفاده از راهنما
 app.post('/api/use-hint', async (req, res) => {
   console.log('💡 Using hint...', req.body);
   
@@ -502,6 +446,7 @@ app.post('/api/use-hint', async (req, res) => {
   }
 });
 
+// API دریافت وضعیت بازی
 app.get('/api/game-status/:gameId', async (req, res) => {
   try {
     const { gameId } = req.params;
@@ -536,7 +481,6 @@ app.get('/api/test', (req, res) => {
   res.json({ 
     success: true, 
     message: 'API is working!',
-    bot: BOT_TOKEN ? 'enabled' : 'disabled',
     timestamp: new Date().toISOString()
   });
 });
@@ -550,15 +494,7 @@ async function startServer() {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`📍 API Base: ${RENDER_URL}`);
-    console.log(`📍 Web App: ${WEB_APP_URL}`);
     console.log(`📍 Health: ${RENDER_URL}/health`);
-    console.log(`📍 Debug: ${RENDER_URL}/debug`);
-    
-    if (BOT_TOKEN) {
-      console.log('✅ Telegram Bot is ready with Webhook');
-    } else {
-      console.log('⚠️ BOT_TOKEN is missing - bot will not function');
-    }
   });
 }
 
