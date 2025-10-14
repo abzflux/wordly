@@ -34,7 +34,8 @@ const pool = new Pool({
 });
 
 // راه‌اندازی بات تلگرام
-const bot = new Telegraf('8408419647:AAGuoIwzH-_S0jXWshGs-jz4CCTJgc_tfdQ');
+const BOT_TOKEN = '8408419647:AAGuoIwzH-_S0jXWshGs-jz4CCTJgc_tfdQ';
+const bot = new Telegraf(BOT_TOKEN);
 
 // ایجاد جداول (فقط یک بار)
 async function createTables() {
@@ -540,12 +541,16 @@ app.get('/api/game/:code/guesses', async (req, res) => {
   }
 });
 
+// مسیر webhook برای تلگرام
+app.use(bot.webhookCallback('/telegram-webhook'));
+
 // مسیر اصلی برای تست
 app.get('/', (req, res) => {
   res.json({ 
     message: 'Wordly Bot Server is running!',
     status: 'OK',
     timestamp: new Date().toISOString(),
+    bot: 'Active with Webhook',
     api: {
       baseUrl: 'https://wordlybot.onrender.com',
       endpoints: [
@@ -564,14 +569,44 @@ async function startServer() {
   
   console.log('Server starting in production mode...');
   
-  // فقط API routes فعال باشند - بات غیرفعال
-  console.log('Bot is disabled to prevent multiple instances');
+  // تنظیم webhook برای تلگرام
+  const WEBHOOK_URL = `https://wordlybot.onrender.com/telegram-webhook`;
   
+  try {
+    // حذف webhook قبلی (اختیاری)
+    await bot.telegram.deleteWebhook();
+    
+    // تنظیم webhook جدید
+    await bot.telegram.setWebhook(WEBHOOK_URL);
+    console.log('Webhook set successfully:', WEBHOOK_URL);
+    console.log('Bot is ready with webhook!');
+  } catch (error) {
+    console.error('Error setting webhook:', error);
+    console.log('Bot will work in polling mode as fallback');
+    bot.launch().then(() => {
+      console.log('Bot started in polling mode');
+    });
+  }
+
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);
     console.log(`Available at: https://wordlybot.onrender.com`);
     console.log('API endpoints are ready!');
+    console.log('Bot webhook: https://wordlybot.onrender.com/telegram-webhook');
   });
 }
+
+// Graceful shutdown
+process.once('SIGINT', () => {
+  console.log('Shutting down gracefully...');
+  bot.stop('SIGINT');
+  process.exit(0);
+});
+
+process.once('SIGTERM', () => {
+  console.log('Shutting down gracefully...');
+  bot.stop('SIGTERM');
+  process.exit(0);
+});
 
 startServer();
