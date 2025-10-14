@@ -53,6 +53,15 @@ async function createTables() {
       )
     `);
 
+    // جدول کاربران وب (برای کاربرانی که از طریق وب بازی می‌کنند)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS web_users (
+        id SERIAL PRIMARY KEY,
+        user_id VARCHAR(50) UNIQUE NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
     // جدول بازی‌ها
     await pool.query(`
       CREATE TABLE IF NOT EXISTS games (
@@ -75,12 +84,13 @@ async function createTables() {
       )
     `);
 
-    // جدول حدس‌ها
+    // جدول حدس‌ها - اصلاح شده برای پشتیبانی از هر دو نوع کاربر
     await pool.query(`
       CREATE TABLE IF NOT EXISTS guesses (
         id SERIAL PRIMARY KEY,
         game_id INTEGER REFERENCES games(id),
-        user_id BIGINT REFERENCES users(telegram_id),
+        user_type VARCHAR(10) NOT NULL, -- 'telegram' یا 'web'
+        user_identifier VARCHAR(50) NOT NULL, -- telegram_id یا user_id
         guess_word VARCHAR(50) NOT NULL,
         guess_result JSONB NOT NULL,
         attempt_number INTEGER NOT NULL,
@@ -94,7 +104,7 @@ async function createTables() {
   }
 }
 
-// ثبت کاربر جدید
+// ثبت کاربر جدید تلگرام
 async function registerUser(ctx) {
   const telegramId = ctx.from.id;
   const username = ctx.from.username || '';
@@ -111,6 +121,20 @@ async function registerUser(ctx) {
   } catch (error) {
     console.error('Error registering user:', error);
     return 'خطا در ثبت کاربر!';
+  }
+}
+
+// ثبت کاربر وب
+async function registerWebUser(userId) {
+  try {
+    await pool.query(
+      'INSERT INTO web_users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING',
+      [userId]
+    );
+    return true;
+  } catch (error) {
+    console.error('Error registering web user:', error);
+    return false;
   }
 }
 
@@ -354,6 +378,9 @@ app.post('/api/game/:code/guess', async (req, res) => {
   const gameCode = req.params.code;
 
   try {
+    // ثبت کاربر وب اگر وجود ندارد
+    await registerWebUser(userId);
+
     // دریافت اطلاعات بازی
     const gameResult = await pool.query(
       'SELECT * FROM games WHERE code = $1',
@@ -409,11 +436,11 @@ app.post('/api/game/:code/guess', async (req, res) => {
       [newGuessedLetters, newCorrectLetters, gameCode]
     );
 
-    // ثبت حدس
+    // ثبت حدس با نوع کاربر وب
     await pool.query(
-      `INSERT INTO guesses (game_id, user_id, guess_word, guess_result, attempt_number)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [game.id, userId, guessWord, { result }, game.current_attempt + 1]
+      `INSERT INTO guesses (game_id, user_type, user_identifier, guess_word, guess_result, attempt_number)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [game.id, 'web', userId, guessWord, { result }, game.current_attempt + 1]
     );
 
     // بررسی پایان بازی
@@ -436,11 +463,13 @@ app.post('/api/game/:code/guess', async (req, res) => {
         [gameStatus, endTime, score, gameCode]
       );
 
-      // به‌روزرسانی امتیاز کاربر
-      await pool.query(
-        'UPDATE users SET score = score + $1 WHERE telegram_id = $2',
-        [score, userId]
-      );
+      // به‌روزرسانی امتیاز کاربر تلگرام (اگر بازی کننده از تلگرام است)
+      if (game.player_id) {
+        await pool.query(
+          'UPDATE users SET score = score + $1 WHERE telegram_id = $2',
+          [score, game.player_id]
+        );
+      }
     } else if (game.current_attempt + 1 >= game.max_attempts) {
       gameStatus = 'failed';
       endTime = new Date();
@@ -527,9 +556,13 @@ app.post('/api/game/:code/hint', async (req, res) => {
 app.get('/api/game/:code/guesses', async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT g.*, u.username 
+      SELECT g.*, 
+             CASE 
+               WHEN g.user_type = 'telegram' THEN u.username 
+               ELSE 'بازیکن وب'
+             END as username
       FROM guesses g 
-      JOIN users u ON g.user_id = u.telegram_id 
+      LEFT JOIN users u ON g.user_identifier::bigint = u.telegram_id AND g.user_type = 'telegram'
       WHERE g.game_id = (SELECT id FROM games WHERE code = $1)
       ORDER BY g.attempt_number
     `, [req.params.code]);
