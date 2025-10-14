@@ -8,10 +8,10 @@ const router = express.Router();
 // Initialize bot
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
 
-// Store active games temporarily
-const activeGames = new Map();
+// Web App URL - باید HTTPS باشد
+const WEB_APP_URL = 'https://wordlybot.ct.ws';
 
-// /start command
+// /start command با منوی درست
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
@@ -27,76 +27,25 @@ bot.onText(/\/start/, async (msg) => {
         console.error('Error saving user:', error);
     }
 
+    // منوی اصلی با دکمه Web App
     const menu = {
         reply_markup: {
             keyboard: [
-                [{ text: '🎮 بازی دو نفره' }, { text: '🏆 لیگ' }],
-                [{ text: '📊 جدول رتبه‌بندی' }, { text: 'ℹ️ راهنما' }]
+                [{ text: '🎮 بازی دو نفره' }],
+                [{ text: '🏆 حالت لیگ' }],
+                [{ text: '📊 جدول رتبه‌بندی' }]
             ],
             resize_keyboard: true
         }
     };
 
-    bot.sendMessage(chatId, `👋 سلام ${firstName}! به بازی کلمه‌ی خوش آمدید!`, menu);
+    bot.sendMessage(chatId, `👋 سلام ${firstName}! به بازی کلمه خوش آمدید!\n\nبرای شروع بازی از گزینه‌های زیر استفاده کنید:`, menu);
 });
 
-// /join command
-bot.onText(/\/join (.+)/, async (msg, match) => {
-    const chatId = msg.chat.id;
-    const gameCode = match[1].toUpperCase();
-    
-    try {
-        const gameResult = await query(
-            'SELECT * FROM games WHERE code = $1 AND status = $2',
-            [gameCode, 'waiting']
-        );
-
-        if (gameResult.rows.length === 0) {
-            return bot.sendMessage(chatId, '❌ بازی یافت نشد یا قبلاً شروع شده است.');
-        }
-
-        const game = gameResult.rows[0];
-        
-        // Update game with opponent
-        await query(
-            'UPDATE games SET opponent_id = $1, status = $2 WHERE code = $3',
-            [msg.from.id, 'ready', game.code]
-        );
-
-        const webAppUrl = `${process.env.WEB_APP_URL}/game.html?code=${game.code}&player=opponent`;
-        
-        bot.sendMessage(chatId, `🎉 شما به بازی پیوستید!`, {
-            reply_markup: {
-                inline_keyboard: [[
-                    { text: '🚀 شروع بازی', web_app: { url: webAppUrl } }
-                ]]
-            }
-        });
-
-        // Notify creator
-        const creatorWebAppUrl = `${process.env.WEB_APP_URL}/game.html?code=${game.code}&player=creator`;
-        bot.sendMessage(game.creator_id, `🎊 کاربری به بازی شما پیوست!`, {
-            reply_markup: {
-                inline_keyboard: [[
-                    { text: '🚀 شروع بازی', web_app: { url: creatorWebAppUrl } }
-                ]]
-            }
-        });
-
-    } catch (error) {
-        console.error('Error joining game:', error);
-        bot.sendMessage(chatId, '❌ خطا در پیوستن به بازی.');
-    }
-});
-
-// Handle menu messages
+// ایجاد بازی دو نفره - با Mini App درست
 bot.on('message', async (msg) => {
-    if (!msg.text) return;
-    
-    const chatId = msg.chat.id;
-    const text = msg.text;
-
-    if (text === '🎮 بازی دو نفره') {
+    if (msg.text === '🎮 بازی دو نفره') {
+        const chatId = msg.chat.id;
         const gameCode = GameLogic.generateGameCode();
         
         try {
@@ -105,13 +54,21 @@ bot.on('message', async (msg) => {
                 [gameCode, msg.from.id, 10]
             );
 
-            const webAppUrl = `${process.env.WEB_APP_URL}/create.html?code=${gameCode}`;
+            // ایجاد لینک Mini App درست
+            const miniAppUrl = `${WEB_APP_URL}/create.html?code=${gameCode}&startapp=${gameCode}`;
             
-            bot.sendMessage(chatId, `🎯 بازی جدید ایجاد شد!\n\nکد بازی: ${gameCode}`, {
+            bot.sendMessage(chatId, `🎯 *بازی جدید ایجاد شد!*\n\n🏷️ کد بازی: \`${gameCode}\`\n\nبرای تنظیم کلمه روی دکمه زیر کلیک کنید:`, {
+                parse_mode: 'Markdown',
                 reply_markup: {
                     inline_keyboard: [
-                        [{ text: '📝 انتخاب کلمه', web_app: { url: webAppUrl } }],
-                        [{ text: '🔗 دعوت از دوست', switch_inline_query: `برای پیوستن به بازی از دستور /join ${gameCode} استفاده کن!` }]
+                        [{ 
+                            text: '📝 تنظیم کلمه', 
+                            web_app: { url: miniAppUrl } 
+                        }],
+                        [{ 
+                            text: '🔗 دعوت از دوست', 
+                            switch_inline_query: `برای پیوستن به بازی از دستور زیر استفاده کن:\n/join ${gameCode}`
+                        }]
                     ]
                 }
             });
@@ -120,8 +77,79 @@ bot.on('message', async (msg) => {
             console.error('Error creating game:', error);
             bot.sendMessage(chatId, '❌ خطا در ایجاد بازی.');
         }
+    }
+});
 
-    } else if (text === '📊 جدول رتبه‌بندی') {
+// دستور join با Mini App
+bot.onText(/\/join (.+)/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const gameCode = match[1].toUpperCase();
+    
+    try {
+        const gameResult = await query(
+            'SELECT * FROM games WHERE code = $1 AND status IN ($2, $3)',
+            [gameCode, 'waiting', 'ready']
+        );
+
+        if (gameResult.rows.length === 0) {
+            return bot.sendMessage(chatId, '❌ بازی یافت نشد یا قبلاً شروع شده است.');
+        }
+
+        const game = gameResult.rows[0];
+        
+        // اگر بازی آماده است، حریف رو اضافه کن
+        if (game.status === 'waiting') {
+            await query(
+                'UPDATE games SET opponent_id = $1, status = $2 WHERE code = $3',
+                [msg.from.id, 'ready', game.code]
+            );
+        }
+
+        // لینک Mini App برای حریف
+        const miniAppUrl = `${WEB_APP_URL}/game.html?code=${game.code}&player=opponent&startapp=${game.code}`;
+        
+        bot.sendMessage(chatId, `🎉 *شما به بازی پیوستید!*\n\n🏷️ کد بازی: \`${game.code}\`\n\nبرای شروع بازی روی دکمه زیر کلیک کنید:`, {
+            parse_mode: 'Markdown',
+            reply_markup: {
+                inline_keyboard: [[
+                    { 
+                        text: '🚀 شروع بازی', 
+                        web_app: { url: miniAppUrl } 
+                    }
+                ]]
+            }
+        });
+
+        // اطلاع به سازنده بازی
+        if (game.creator_id !== msg.from.id) {
+            const creatorMiniAppUrl = `${WEB_APP_URL}/game.html?code=${game.code}&player=creator&startapp=${game.code}`;
+            bot.sendMessage(game.creator_id, `🎊 *یک کاربر به بازی شما پیوست!*\n\nبرای شروع بازی روی دکمه زیر کلیک کنید:`, {
+                parse_mode: 'Markdown',
+                reply_markup: {
+                    inline_keyboard: [[
+                        { 
+                            text: '🚀 شروع بازی', 
+                            web_app: { url: creatorMiniAppUrl } 
+                        }
+                    ]]
+                }
+            });
+        }
+
+    } catch (error) {
+        console.error('Error joining game:', error);
+        bot.sendMessage(chatId, '❌ خطا در پیوستن به بازی.');
+    }
+});
+
+// سایر دستورات...
+bot.on('message', async (msg) => {
+    if (!msg.text || msg.text.startsWith('/')) return;
+    
+    const chatId = msg.chat.id;
+    const text = msg.text;
+
+    if (text === '📊 جدول رتبه‌بندی') {
         try {
             const leaderboard = await query(`
                 SELECT u.first_name, u.username, l.score 
@@ -131,40 +159,19 @@ bot.on('message', async (msg) => {
                 LIMIT 10
             `);
             
-            let leaderboardText = '🏆 جدول رتبه‌بندی:\n\n';
+            let leaderboardText = '🏆 *جدول رتبه‌بندی:*\n\n';
             leaderboard.rows.forEach((row, index) => {
-                leaderboardText += `${index + 1}. ${row.first_name} - ${row.score} امتیاز\n`;
+                const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}.`;
+                leaderboardText += `${medal} ${row.first_name} - ${row.score} امتیاز\n`;
             });
             
-            bot.sendMessage(chatId, leaderboardText);
+            bot.sendMessage(chatId, leaderboardText, { parse_mode: 'Markdown' });
             
         } catch (error) {
             console.error('Error fetching leaderboard:', error);
             bot.sendMessage(chatId, '❌ خطا در دریافت جدول رتبه‌بندی.');
         }
-    } else if (text === 'ℹ️ راهنما') {
-        const helpText = `
-🎮 راهنمای بازی کلمه:
-
-• بازی دو نفره: یک بازی با دوست خود ایجاد کنید
-• لیگ: در مسابقات 10 مرحله‌ای شرکت کنید
-• هر بازیکن فرصت دارد حروف را حدس بزند
-• زمان کمتر = امتیاز بیشتر
-• استفاده از راهنما 15 امتیاز کسر دارد
-
-موفق باشید! 🎯
-        `;
-        bot.sendMessage(chatId, helpText);
     }
-});
-
-// API routes
-router.get('/test', (req, res) => {
-    res.json({ 
-        success: true,
-        message: 'Bot routes are working!',
-        bot_status: 'active'
-    });
 });
 
 module.exports = router;
