@@ -5,5 +5,6 @@ module.exports = {
   DATABASE_URL: process.env.DATABASE_URL || 'postgresql://abolfazl:SlnZemyMHIZzEHKgC5IKiyJECwd8oB6h@dpg-d3n66fali9vc738qmm20-a.frankfurt-postgres.render.com/wordlydb_446t',
   PORT: process.env.PORT || 3000,
   WEB_APP_URL: process.env.WEB_APP_URL || 'https://wordlybot.ct.ws',
+  BACKEND_URL: process.env.BACKEND_URL || 'https://wordly-bot.onrender.com',
   NODE_ENV: process.env.NODE_ENV || 'production'
 };
