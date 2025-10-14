@@ -7,7 +7,7 @@ const cors = require('cors');
 const app = express();
 
 // تنظیمات
-const BOT_TOKEN = process.env.BOT_TOKEN || '8408419647:AAFivpMKAKSGoIWI0Qq8PJ_zrdhQK9wlJFo';
+const BOT_TOKEN = process.env.BOT_TOKEN || '8408419647:AAGuoIwzH-_S0jXWshGs-jz4CCTJgc_tfdQ';
 const WEB_APP_URL = process.env.WEB_APP_URL || 'https://wordly.ct.ws';
 
 console.log('🚀 Starting Wordly Server...');
