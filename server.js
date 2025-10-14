@@ -395,7 +395,7 @@ bot.hears('📋 بازی‌های فعال من', async (ctx) => {
     message += `   نقش: ${role}\n`;
     message += `   حریف: ${opponent}\n`;
     message += `   وضعیت: فعال\n`;
-    message += `   لینک بازی: https://wordly.ct.ws/game.html?game=${game.code}\n\n`;
+    message += `   لینک بازی: https://wordlybot.ct.ws/game.html?game=${game.code}\n\n`;
   });
 
   message += 'برای بازی کردن، روی لینک بازی کلیک کنید.';
@@ -488,7 +488,7 @@ bot.on('text', async (ctx) => {
           `⏰ زمان ایجاد: ${new Date().toLocaleTimeString('fa-IR')}\n\n` +
           `👥 منتظر پیوستن حریف باشید...\n\n` +
           `🔗 برای مشاهده بازی به لینک زیر مراجعه کنید:\n` +
-          `https://wordly.ct.ws/game.html?game=${game.code}\n\n` +
+          `https://wordlybot.ct.ws/game.html?game=${game.code}\n\n` +
           `📤 کد بازی را برای دوستان خود بفرستید!`,
           getMainMenu()
         );
@@ -523,7 +523,7 @@ bot.on('text', async (ctx) => {
             `👤 بازیکن جدید: ${ctx.from.first_name}\n` +
             `⏰ زمان پیوستن: ${new Date().toLocaleTimeString('fa-IR')}\n\n` +
             `🔗 برای شروع بازی به لینک زیر مراجعه کنید:\n` +
-            `https://wordly.ct.ws/game.html?game=${game.code}`
+            `https://wordlybot.ct.ws/game.html?game=${game.code}`
           );
         } catch (error) {
           console.error('Error notifying creator:', error);
@@ -536,7 +536,7 @@ bot.on('text', async (ctx) => {
           `🎯 تعداد حدس: ${game.max_attempts}\n` +
           `⏰ زمان شروع: ${new Date().toLocaleTimeString('fa-IR')}\n\n` +
           `🔗 برای شروع بازی به لینک زیر مراجعه کنید:\n` +
-          `https://wordly.ct.ws/game.html?game=${game.code}\n\n` +
+          `https://wordlybot.ct.ws/game.html?game=${game.code}\n\n` +
           `🎮 موفق باشید!`,
           getMainMenu()
         );
