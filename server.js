@@ -58,7 +58,6 @@ class WordGameBot {
             this.log('✅ متصل به دیتابیس');
             
             await this.createTables();
-            await this.fixTableConstraints();
             await this.loadActiveGames();
             
         } catch (error) {
@@ -84,21 +83,29 @@ class WordGameBot {
                 )
             `);
 
-            // ایجاد جدول بازی‌ها
+            // ایجاد جدول بازی‌ها با تمام ستون‌های مورد نیاز
             await this.db.query(`
                 CREATE TABLE IF NOT EXISTS multiplayer_games (
                     gameid VARCHAR(10) PRIMARY KEY,
                     creatorid BIGINT NOT NULL,
+                    creatorname VARCHAR(255),
                     opponentid BIGINT,
+                    opponentname VARCHAR(255),
                     word VARCHAR(255),
                     wordlength INTEGER DEFAULT 0,
                     currentwordstate VARCHAR(255),
+                    worddisplay VARCHAR(255),
                     guessedletters TEXT DEFAULT '[]',
                     attempts INTEGER DEFAULT 0,
+                    attemptsleft INTEGER DEFAULT 6,
                     maxattempts INTEGER DEFAULT 6,
                     hintsused INTEGER DEFAULT 0,
+                    hintsusedcreator INTEGER DEFAULT 0,
+                    hintsusedopponent INTEGER DEFAULT 0,
                     maxhints INTEGER DEFAULT 2,
                     status VARCHAR(20) DEFAULT 'waiting',
+                    currentturn VARCHAR(20) DEFAULT 'creator',
+                    wordsetter VARCHAR(20) DEFAULT 'creator',
                     winnerid BIGINT,
                     creatorscore INTEGER DEFAULT 0,
                     opponentscore INTEGER DEFAULT 0,
@@ -110,36 +117,6 @@ class WordGameBot {
             this.log('✅ جداول دیتابیس آماده');
         } catch (error) {
             this.log(`❌ خطا در ایجاد جداول: ${error.message}`);
-        }
-    }
-
-    async fixTableConstraints() {
-        try {
-            // اضافه کردن ستون‌های جدید
-            const alterQueries = [
-                `ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS creatorname VARCHAR(255)`,
-                `ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS opponentname VARCHAR(255)`,
-                `ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS worddisplay VARCHAR(255)`,
-                `ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS attemptsleft INTEGER DEFAULT 6`,
-                `ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS hintsusedcreator INTEGER DEFAULT 0`,
-                `ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS hintsusedopponent INTEGER DEFAULT 0`,
-                `ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS currentturn VARCHAR(20) DEFAULT 'creator'`,
-                `ALTER TABLE multiplayer_games ADD COLUMN IF NOT EXISTS wordsetter VARCHAR(20) DEFAULT 'creator'`
-            ];
-
-            for (const query of alterQueries) {
-                try {
-                    await this.db.query(query);
-                } catch (error) {
-                    if (!error.message.includes('already exists')) {
-                        this.log(`⚠️ خطا در اجرای دستور: ${query}`);
-                    }
-                }
-            }
-
-            this.log('✅ مشکلات جدول برطرف شد');
-        } catch (error) {
-            this.log(`❌ خطا در رفع مشکلات جدول: ${error.message}`);
         }
     }
 
@@ -164,7 +141,7 @@ class WordGameBot {
                 ON CONFLICT (userid) DO UPDATE SET firstname = $2
             `, [userId, firstName]);
 
-            // ایجاد بازی با مقادیر اولیه کامل
+            // ایجاد بازی با تمام ستون‌های مورد نیاز
             await this.db.query(`
                 INSERT INTO multiplayer_games 
                 (gameid, creatorid, creatorname, status, currentturn, attemptsleft, maxattempts, maxhints) 
@@ -262,26 +239,7 @@ class WordGameBot {
                 }
                 
                 const row = result.rows[0];
-                game = {
-                    gameId: row.gameid,
-                    creatorId: row.creatorid,
-                    creatorName: row.creatorname,
-                    opponentId: row.opponentid,
-                    opponentName: row.opponentname,
-                    word: row.word,
-                    wordDisplay: row.worddisplay,
-                    guessedLetters: [],
-                    attemptsLeft: row.attemptsleft || 6,
-                    maxAttempts: row.maxattempts || 6,
-                    hintsUsedCreator: row.hintsusedcreator || 0,
-                    hintsUsedOpponent: row.hintsusedopponent || 0,
-                    maxHints: row.maxhints || 2,
-                    status: row.status,
-                    currentTurn: row.currentturn || 'creator',
-                    creatorScore: row.creatorscore || 0,
-                    opponentScore: row.opponentscore || 0,
-                    wordSetter: row.wordsetter || null
-                };
+                game = this.createGameFromRow(row);
                 this.activeGames.set(gameId, game);
             }
 
@@ -359,6 +317,39 @@ class WordGameBot {
             this.log(`❌ خطا در پیوستن به بازی: ${error.message}`);
             await bot.sendMessage(chatId, '❌ خطا در پیوستن به بازی. لطفاً دوباره تلاش کنید.');
         }
+    }
+
+    createGameFromRow(row) {
+        let guessedLetters = [];
+        try {
+            guessedLetters = typeof row.guessedletters === 'string' 
+                ? JSON.parse(row.guessedletters || '[]') 
+                : (row.guessedletters || []);
+        } catch (e) {
+            guessedLetters = [];
+        }
+        
+        return {
+            gameId: row.gameid,
+            creatorId: row.creatorid,
+            creatorName: row.creatorname,
+            opponentId: row.opponentid,
+            opponentName: row.opponentname,
+            word: row.word,
+            wordDisplay: row.worddisplay || row.currentwordstate,
+            guessedLetters: guessedLetters,
+            attemptsLeft: row.attemptsleft || 6,
+            maxAttempts: row.maxattempts || 6,
+            hintsUsedCreator: row.hintsusedcreator || 0,
+            hintsUsedOpponent: row.hintsusedopponent || 0,
+            maxHints: row.maxhints || 2,
+            status: row.status,
+            currentTurn: row.currentturn || 'creator',
+            creatorScore: row.creatorscore || 0,
+            opponentScore: row.opponentscore || 0,
+            wordSetter: row.wordsetter || null,
+            createdAt: row.createdat
+        };
     }
 
     async cancelGame(gameId, reason) {
@@ -560,36 +551,7 @@ class WordGameBot {
             );
             
             for (const row of result.rows) {
-                let guessedLetters = [];
-                try {
-                    guessedLetters = typeof row.guessedletters === 'string' 
-                        ? JSON.parse(row.guessedletters || '[]') 
-                        : (row.guessedletters || []);
-                } catch (e) {
-                    guessedLetters = [];
-                }
-                
-                const game = {
-                    gameId: row.gameid,
-                    creatorId: row.creatorid,
-                    creatorName: row.creatorname,
-                    opponentId: row.opponentid,
-                    opponentName: row.opponentname,
-                    word: row.word,
-                    wordDisplay: row.worddisplay || row.currentwordstate,
-                    guessedLetters: guessedLetters,
-                    attemptsLeft: row.attemptsleft || 6,
-                    maxAttempts: row.maxattempts || 6,
-                    hintsUsedCreator: row.hintsusedcreator || 0,
-                    hintsUsedOpponent: row.hintsusedopponent || 0,
-                    maxHints: row.maxhints || 2,
-                    status: row.status,
-                    currentTurn: row.currentturn || 'creator',
-                    creatorScore: row.creatorscore || 0,
-                    opponentScore: row.opponentscore || 0,
-                    wordSetter: row.wordsetter || null,
-                    createdAt: row.createdat
-                };
+                const game = this.createGameFromRow(row);
                 this.activeGames.set(row.gameid, game);
             }
             
@@ -629,36 +591,7 @@ class WordGameBot {
                     }
                     
                     const row = result.rows[0];
-                    
-                    let guessedLetters = [];
-                    try {
-                        guessedLetters = typeof row.guessedletters === 'string' 
-                            ? JSON.parse(row.guessedletters || '[]') 
-                            : (row.guessedletters || []);
-                    } catch (e) {
-                        guessedLetters = [];
-                    }
-                    
-                    game = {
-                        gameId: row.gameid,
-                        creatorId: row.creatorid,
-                        creatorName: row.creatorname,
-                        opponentId: row.opponentid,
-                        opponentName: row.opponentname,
-                        word: row.word,
-                        wordDisplay: row.worddisplay || row.currentwordstate,
-                        guessedLetters: guessedLetters,
-                        attemptsLeft: row.attemptsleft || 6,
-                        maxAttempts: row.maxattempts || 6,
-                        hintsUsedCreator: row.hintsusedcreator || 0,
-                        hintsUsedOpponent: row.hintsusedopponent || 0,
-                        maxHints: row.maxhints || 2,
-                        status: row.status,
-                        currentTurn: row.currentturn || 'creator',
-                        creatorScore: row.creatorscore || 0,
-                        opponentScore: row.opponentscore || 0,
-                        wordSetter: row.wordsetter || null
-                    };
+                    game = this.createGameFromRow(row);
                     this.activeGames.set(gameId, game);
                 }
 
@@ -702,6 +635,13 @@ class WordGameBot {
                     return res.status(403).json({ 
                         success: false, 
                         error: 'فقط سازنده می‌تواند کلمه را تنظیم کند' 
+                    });
+                }
+
+                if (game.status !== 'waiting_for_word') {
+                    return res.status(400).json({ 
+                        success: false, 
+                        error: 'بازی در وضعیت مناسب برای ثبت کلمه نیست' 
                     });
                 }
 
