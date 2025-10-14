@@ -1,12 +1,15 @@
+require('dotenv').config();
 const express = require('express');
 const { Telegraf, Markup, session } = require('telegraf');
 const { Pool } = require('pg');
-const path = require('path');
+const cors = require('cors');
+
 const app = express();
 
 // تنظیمات
 const BOT_TOKEN = process.env.BOT_TOKEN || '8408419647:AAFivpMKAKSGoIWI0Qq8PJ_zrdhQK9wlJFo';
 const WEB_APP_URL = process.env.WEB_APP_URL || 'https://wordly.ct.ws';
+const API_BASE_URL = process.env.RENDER_EXTERNAL_URL || process.env.API_BASE_URL || 'https://your-render-app.onrender.com';
 
 // تنظیمات PostgreSQL
 const DB_HOST = process.env.DB_HOST || 'dpg-d3lquoidbo4c73bbhgu0-a.frankfurt-postgres.render.com';
@@ -14,6 +17,10 @@ const DB_USER = process.env.DB_USER || 'abz';
 const DB_PASSWORD = process.env.DB_PASSWORD || 'NkFFeaYzvXkUEbcp80jW7V0tfDQe6LsC';
 const DB_NAME = process.env.DB_NAME || 'wordly_db';
 const DB_PORT = process.env.DB_PORT || 5432;
+
+// Middleware
+app.use(cors());
+app.use(express.json());
 
 // اتصال به دیتابیس
 const pool = new Pool({
@@ -24,7 +31,11 @@ const pool = new Pool({
   port: DB_PORT,
   ssl: {
     rejectUnauthorized: false
-  }
+  },
+  // تنظیمات connection pool برای render.com
+  max: 20,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 2000,
 });
 
 // ایجاد جداول مورد نیاز
@@ -76,24 +87,27 @@ async function initializeDatabase() {
 
 initializeDatabase();
 
-const bot = new Telegraf(BOT_TOKEN);
+// راه‌اندازی ربات فقط اگر توکن وجود دارد
+let bot;
+if (BOT_TOKEN && BOT_TOKEN !== '8408419647:AAFivpMKAKSGoIWI0Qq8PJ_zrdhQK9wlJFo') {
+  bot = new Telegraf(BOT_TOKEN);
+  
+  // میدلور session
+  bot.use(session());
 
-// میدلور session
-bot.use(session());
+  // میدلور برای ذخیره اطلاعات کاربر
+  bot.use((ctx, next) => {
+    if (ctx.from) {
+      ctx.session = ctx.session || {};
+      ctx.session.userId = ctx.from.id;
+      ctx.session.username = ctx.from.first_name + (ctx.from.last_name ? ' ' + ctx.from.last_name : '');
+    }
+    return next();
+  });
 
-// میدلور برای ذخیره اطلاعات کاربر
-bot.use((ctx, next) => {
-  if (ctx.from) {
-    ctx.session = ctx.session || {};
-    ctx.session.userId = ctx.from.id;
-    ctx.session.username = ctx.from.first_name + (ctx.from.last_name ? ' ' + ctx.from.last_name : '');
-  }
-  return next();
-});
-
-// دستور start
-bot.start((ctx) => {
-  const menuText = `🎮 به بازی Wordly خوش آمدید ${ctx.from.first_name}!
+  // دستور start
+  bot.start((ctx) => {
+    const menuText = `🎮 به بازی Wordly خوش آمدید ${ctx.from.first_name}!
 
 در این بازی می‌توانید با دوستان خود به رقابت بپردازید و کلمات را حدس بزنید.
 
@@ -103,46 +117,46 @@ bot.start((ctx) => {
 • جدول رده‌بندی
 • رابط کاربری زیبا و فارسی`;
 
-  ctx.reply(menuText, Markup.inlineKeyboard([
-    [Markup.button.webApp('🎮 شروع بازی دو نفره', `${WEB_APP_URL}/game.html`)],
-    [Markup.button.callback('🏆 جدول رده‌بندی', 'leaderboard')],
-    [Markup.button.callback('ℹ️ راهنما', 'help')]
-  ]));
-});
-
-// نمایش جدول رده‌بندی
-bot.action('leaderboard', async (ctx) => {
-  try {
-    const result = await pool.query(`
-      SELECT user_name, score, played_at 
-      FROM leaderboard 
-      ORDER BY score DESC 
-      LIMIT 10
-    `);
-    
-    let leaderboardText = '🏆 10 نفر برتر جدول رده‌بندی:\n\n';
-    
-    if (result.rows.length === 0) {
-      leaderboardText += 'هنوز بازی‌ای ثبت نشده است.';
-    } else {
-      result.rows.forEach((row, index) => {
-        const date = new Date(row.played_at).toLocaleDateString('fa-IR');
-        leaderboardText += `${index + 1}. ${row.user_name} - ${row.score} امتیاز (${date})\n`;
-      });
-    }
-    
-    ctx.reply(leaderboardText, Markup.inlineKeyboard([
-      [Markup.button.callback('🔙 بازگشت به منوی اصلی', 'back_to_menu')]
+    ctx.reply(menuText, Markup.inlineKeyboard([
+      [Markup.button.webApp('🎮 شروع بازی دو نفره', `${WEB_APP_URL}/game.html`)],
+      [Markup.button.callback('🏆 جدول رده‌بندی', 'leaderboard')],
+      [Markup.button.callback('ℹ️ راهنما', 'help')]
     ]));
-  } catch (error) {
-    console.error('Error fetching leaderboard:', error);
-    ctx.reply('خطا در دریافت اطلاعات جدول رده‌بندی.');
-  }
-});
+  });
 
-// راهنمای بازی
-bot.action('help', (ctx) => {
-  const helpText = `📖 راهنمای بازی Wordly:
+  // نمایش جدول رده‌بندی
+  bot.action('leaderboard', async (ctx) => {
+    try {
+      const result = await pool.query(`
+        SELECT user_name, score, played_at 
+        FROM leaderboard 
+        ORDER BY score DESC 
+        LIMIT 10
+      `);
+      
+      let leaderboardText = '🏆 10 نفر برتر جدول رده‌بندی:\n\n';
+      
+      if (result.rows.length === 0) {
+        leaderboardText += 'هنوز بازی‌ای ثبت نشده است.';
+      } else {
+        result.rows.forEach((row, index) => {
+          const date = new Date(row.played_at).toLocaleDateString('fa-IR');
+          leaderboardText += `${index + 1}. ${row.user_name} - ${row.score} امتیاز (${date})\n`;
+        });
+      }
+      
+      ctx.reply(leaderboardText, Markup.inlineKeyboard([
+        [Markup.button.callback('🔙 بازگشت به منوی اصلی', 'back_to_menu')]
+      ]));
+    } catch (error) {
+      console.error('Error fetching leaderboard:', error);
+      ctx.reply('خطا در دریافت اطلاعات جدول رده‌بندی.');
+    }
+  });
+
+  // راهنمای بازی
+  bot.action('help', (ctx) => {
+    const helpText = `📖 راهنمای بازی Wordly:
 
 🎮 نحوه بازی:
 1. ابتدا با کلیک روی "شروع بازی دو نفره" یک بازی جدید ایجاد کنید
@@ -162,24 +176,34 @@ bot.action('help', (ctx) => {
 • حروف تکراری فقط یک بار محاسبه می‌شوند
 • می‌توانید حداکثر دو بار از راهنما استفاده کنید`;
 
-  ctx.reply(helpText, Markup.inlineKeyboard([
-    [Markup.button.callback('🔙 بازگشت به منوی اصلی', 'back_to_menu')]
-  ]));
-});
+    ctx.reply(helpText, Markup.inlineKeyboard([
+      [Markup.button.callback('🔙 بازگشت به منوی اصلی', 'back_to_menu')]
+    ]));
+  });
 
-// بازگشت به منوی اصلی
-bot.action('back_to_menu', (ctx) => {
-  ctx.deleteMessage();
-  ctx.reply('منوی اصلی:', Markup.inlineKeyboard([
-    [Markup.button.webApp('🎮 شروع بازی دو نفره', `${WEB_APP_URL}/game.html`)],
-    [Markup.button.callback('🏆 جدول رده‌بندی', 'leaderboard')],
-    [Markup.button.callback('ℹ️ راهنما', 'help')]
-  ]));
-});
+  // بازگشت به منوی اصلی
+  bot.action('back_to_menu', (ctx) => {
+    ctx.deleteMessage();
+    ctx.reply('منوی اصلی:', Markup.inlineKeyboard([
+      [Markup.button.webApp('🎮 شروع بازی دو نفره', `${WEB_APP_URL}/game.html`)],
+      [Markup.button.callback('🏆 جدول رده‌بندی', 'leaderboard')],
+      [Markup.button.callback('ℹ️ راهنما', 'help')]
+    ]));
+  });
 
-// تنظیم express برای سرو فایل‌های استاتیک
-app.use(express.static(path.join(__dirname, 'public')));
-app.use(express.json());
+  // راه‌اندازی ربات
+  bot.launch().then(() => {
+    console.log('Bot is running');
+  });
+
+  // فعال‌سازی graceful shutdown
+  process.once('SIGINT', () => bot.stop('SIGINT'));
+  process.once('SIGTERM', () => bot.stop('SIGTERM'));
+} else {
+  console.log('Bot token not provided, running in API-only mode');
+}
+
+// API Routes
 
 // API برای ایجاد بازی جدید
 app.post('/api/create-game', async (req, res) => {
@@ -408,6 +432,11 @@ app.get('/api/game-status/:gameId', async (req, res) => {
   }
 });
 
+// API سلامت
+app.get('/health', (req, res) => {
+  res.json({ status: 'OK', timestamp: new Date().toISOString() });
+});
+
 // تابع برای تولید شناسه بازی
 function generateGameId() {
   return Math.random().toString(36).substring(2, 8).toUpperCase();
@@ -488,15 +517,7 @@ async function calculateAndSaveScore(gameId, wordGuessed, attempts, hintsUsed) {
 
 // راه‌اندازی سرور
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
+  console.log(`API Base URL: ${API_BASE_URL}`);
 });
-
-// راه‌اندازی ربات
-bot.launch().then(() => {
-  console.log('Bot is running');
-});
-
-// فعال‌سازی graceful shutdown
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
