@@ -1,35 +1,30 @@
 const express = require('express');
 const cors = require('cors');
-const path = require('path');
-const { PORT, WEB_APP_URL } = require('./config/config');
+const { PORT, WEB_APP_URL, BACKEND_URL } = require('./config/config');
 const { initDatabase } = require('./database/models');
 
 // Import routes
-const botRoutes = require('./routes/bot');
 const gameRoutes = require('./routes/game');
+const botRoutes = require('./routes/bot');
 
 const app = express();
 
+// CORS configuration
+app.use(cors({
+  origin: [WEB_APP_URL, 'https://telegram.org'],
+  credentials: true
+}));
+
 // Middleware
-app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, '../frontend')));
 
 // Routes
 app.use('/api/game', gameRoutes);
 app.use('/api/bot', botRoutes);
 
-// Serve frontend
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, '../frontend/index.html'));
-});
-
-app.get('/game', (req, res) => {
-  res.sendFile(path.join(__dirname, '../frontend/game.html'));
-});
-
-app.get('/create', (req, res) => {
-  res.sendFile(path.join(__dirname, '../frontend/create.html'));
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
 // Initialize database and start server
@@ -38,8 +33,9 @@ const startServer = async () => {
     await initDatabase();
     
     app.listen(PORT, () => {
-      console.log(`🚀 Server running on port ${PORT}`);
-      console.log(`🌐 Web app available at: ${WEB_APP_URL}`);
+      console.log(`🚀 Backend server running on port ${PORT}`);
+      console.log(`🌐 Frontend: ${WEB_APP_URL}`);
+      console.log(`🔗 Backend URL: ${BACKEND_URL}`);
     });
   } catch (error) {
     console.error('❌ Failed to start server:', error);
