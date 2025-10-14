@@ -1,14 +1,16 @@
 require('dotenv').config();
 const express = require('express');
+const { Telegraf, Markup, session } = require('telegraf');
 const { Pool } = require('pg');
 const cors = require('cors');
 
 const app = express();
 
 // تنظیمات
+const BOT_TOKEN = process.env.BOT_TOKEN;
 const WEB_APP_URL = process.env.WEB_APP_URL || 'https://wordly.ct.ws';
 
-console.log('🔧 Starting API Server...');
+console.log('🚀 Starting Wordly Server...');
 
 // Middleware
 app.use(cors({
@@ -19,11 +21,12 @@ app.use(cors({
 }));
 
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // Route اصلی
 app.get('/', (req, res) => {
   res.json({
-    message: '🎮 Wordly Game API Server',
+    message: '🎮 Wordly Game Server',
     status: 'active',
     timestamp: new Date().toISOString()
   });
@@ -48,19 +51,19 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
-// ایجاد جداول با تنظیمات درست
+// ایجاد جداول
 async function initializeDatabase() {
   try {
     await pool.query('SELECT 1');
     console.log('✅ Database connected');
 
-    // حذف جدول‌های قدیمی اگر وجود دارند
+    // حذف جدول‌های قدیمی
     try {
       await pool.query('DROP TABLE IF EXISTS leaderboard CASCADE');
       await pool.query('DROP TABLE IF EXISTS active_games CASCADE');
-      console.log('✅ Old tables dropped');
+      console.log('✅ Old tables removed');
     } catch (error) {
-      console.log('ℹ️ No old tables to drop');
+      console.log('ℹ️ No tables to remove');
     }
 
     // ایجاد جدول بازی‌های فعال
@@ -73,7 +76,7 @@ async function initializeDatabase() {
         opponent_name VARCHAR(255),
         word VARCHAR(50),
         category VARCHAR(100),
-        max_attempts INTEGER DEFAULT 10 NOT NULL,
+        max_attempts INTEGER DEFAULT 10,
         current_attempt INTEGER DEFAULT 0,
         used_letters TEXT DEFAULT '',
         correct_letters TEXT DEFAULT '',
@@ -107,7 +110,128 @@ async function initializeDatabase() {
   }
 }
 
-// API ایجاد بازی
+// راه‌اندازی ربات تلگرام
+let bot;
+if (BOT_TOKEN && BOT_TOKEN !== '8408419647:AAFivpMKAKSGoIWI0Qq8PJ_zrdhQK9wlJFo') {
+  console.log('🤖 Initializing Telegram Bot...');
+  
+  try {
+    bot = new Telegraf(BOT_TOKEN);
+    
+    // میدلور session
+    bot.use(session());
+
+    // میدلور برای ذخیره اطلاعات کاربر
+    bot.use((ctx, next) => {
+      if (ctx.from) {
+        ctx.session = ctx.session || {};
+        ctx.session.userId = ctx.from.id;
+        ctx.session.username = ctx.from.first_name + (ctx.from.last_name ? ' ' + ctx.from.last_name : '');
+      }
+      return next();
+    });
+
+    // دستور start
+    bot.start((ctx) => {
+      console.log('🎯 /start received from:', ctx.from.first_name);
+      
+      const menuText = `🎮 به بازی Wordly خوش آمدید ${ctx.from.first_name}!
+
+🏆 بازی دو نفره حدس کلمه
+💡 امتیازدهی هوشمند
+🎯 رابط کاربری زیبا
+
+برای شروع بازی روی دکمه زیر کلیک کنید:`;
+
+      return ctx.reply(menuText, Markup.inlineKeyboard([
+        [Markup.button.webApp('🎮 شروع بازی دو نفره', `${WEB_APP_URL}/game.html`)],
+        [Markup.button.callback('🏆 جدول رده‌بندی', 'show_leaderboard')],
+        [Markup.button.callback('ℹ️ راهنما', 'show_help')]
+      ]));
+    });
+
+    // نمایش جدول رده‌بندی
+    bot.action('show_leaderboard', async (ctx) => {
+      try {
+        const result = await pool.query(`
+          SELECT user_name, score, played_at 
+          FROM leaderboard 
+          ORDER BY score DESC 
+          LIMIT 10
+        `);
+        
+        let leaderboardText = '🏆 10 نفر برتر:\n\n';
+        
+        if (result.rows.length === 0) {
+          leaderboardText += 'هنوز بازی‌ای ثبت نشده است.\nاولین نفری باشید که بازی می‌کند!';
+        } else {
+          result.rows.forEach((row, index) => {
+            leaderboardText += `${index + 1}. ${row.user_name} - ${row.score} امتیاز\n`;
+          });
+        }
+        
+        await ctx.reply(leaderboardText, Markup.inlineKeyboard([
+          [Markup.button.callback('🔙 بازگشت به منو', 'back_to_menu')]
+        ]));
+      } catch (error) {
+        console.error('Error fetching leaderboard:', error);
+        await ctx.reply('⚠️ خطا در دریافت اطلاعات جدول رده‌بندی.');
+      }
+    });
+
+    // راهنمای بازی
+    bot.action('show_help', (ctx) => {
+      const helpText = `📖 راهنمای بازی Wordly:
+
+🎮 **نحوه بازی:**
+1. روی "شروع بازی دو نفره" کلیک کنید
+2. شناسه بازی را به دوست خود بدهید
+3. کلمه و دسته‌بندی را وارد کنید
+4. دوست شما کلمه را حدس می‌زند
+
+🎯 **قوانین بازی:**
+• تعداد حدس: 1.5 برابر تعداد حروف کلمه
+• راهنما: حداکثر ۲ بار (۱۵- امتیاز)
+• حروف تکراری فقط یک بار شمرده می‌شوند
+
+🏆 **سیستم امتیازدهی:**
+• حدس کامل کلمه: ۱۰۰+ امتیاز
+• هر حرف صحیح: ۱۰+ امتیاز
+• هر حرف غلط: ۵- امتیاز
+• زمان کمتر: امتیاز بیشتر`;
+
+      return ctx.reply(helpText, Markup.inlineKeyboard([
+        [Markup.button.callback('🔙 بازگشت به منو', 'back_to_menu')]
+      ]));
+    });
+
+    // بازگشت به منوی اصلی
+    bot.action('back_to_menu', (ctx) => {
+      ctx.deleteMessage().catch(() => {});
+      ctx.reply('منوی اصلی:', Markup.inlineKeyboard([
+        [Markup.button.webApp('🎮 شروع بازی دو نفره', `${WEB_APP_URL}/game.html`)],
+        [Markup.button.callback('🏆 جدول رده‌بندی', 'show_leaderboard')],
+        [Markup.button.callback('ℹ️ راهنما', 'show_help')]
+      ]));
+    });
+
+    // راه‌اندازی ربات با Polling
+    bot.launch().then(() => {
+      console.log('✅ Telegram Bot is running!');
+    }).catch((error) => {
+      console.error('❌ Failed to start bot:', error);
+    });
+
+  } catch (error) {
+    console.error('❌ Bot initialization failed:', error);
+  }
+} else {
+  console.log('⚠️ Bot token not provided or using default token');
+}
+
+// API Routes
+
+// ایجاد بازی جدید
 app.post('/api/create-game', async (req, res) => {
   console.log('📝 Creating game...', req.body);
   
@@ -117,18 +241,16 @@ app.post('/api/create-game', async (req, res) => {
     if (!userId || !userName) {
       return res.status(400).json({ 
         success: false, 
-        error: 'userId and userName are required' 
+        error: 'شناسه کاربر و نام کاربری الزامی است' 
       });
     }
 
     const gameId = Math.random().toString(36).substring(2, 8).toUpperCase();
     
-    // مقدار پیش‌فرض برای max_attempts
-    const maxAttempts = 10;
-    
+    // ایجاد بازی با مقدار پیش‌فرض برای max_attempts
     await pool.query(
-      'INSERT INTO active_games (game_id, creator_id, creator_name, max_attempts) VALUES ($1, $2, $3, $4)',
-      [gameId, userId, userName, maxAttempts]
+      'INSERT INTO active_games (game_id, creator_id, creator_name, max_attempts) VALUES ($1, $2, $3, 10)',
+      [gameId, parseInt(userId), userName]
     );
     
     console.log('✅ Game created:', gameId);
@@ -146,7 +268,7 @@ app.post('/api/create-game', async (req, res) => {
   }
 });
 
-// API پیوستن به بازی
+// پیوستن به بازی
 app.post('/api/join-game', async (req, res) => {
   console.log('🔗 Joining game...', req.body);
   
@@ -155,7 +277,7 @@ app.post('/api/join-game', async (req, res) => {
     
     const result = await pool.query(
       'UPDATE active_games SET opponent_id = $1, opponent_name = $2, game_status = $3 WHERE game_id = $4 AND opponent_id IS NULL RETURNING *',
-      [userId, userName, 'joined', gameId]
+      [parseInt(userId), userName, 'joined', gameId]
     );
     
     if (result.rows.length === 0) {
@@ -180,7 +302,7 @@ app.post('/api/join-game', async (req, res) => {
   }
 });
 
-// API تنظیم کلمه
+// تنظیم کلمه
 app.post('/api/set-word', async (req, res) => {
   console.log('📝 Setting word...', req.body);
   
@@ -223,7 +345,7 @@ app.post('/api/set-word', async (req, res) => {
   }
 });
 
-// API ثبت حدس
+// ثبت حدس
 app.post('/api/make-guess', async (req, res) => {
   console.log('🎯 Making guess...', req.body);
   
@@ -312,7 +434,7 @@ app.post('/api/make-guess', async (req, res) => {
   }
 });
 
-// API استفاده از راهنما
+// استفاده از راهنما
 app.post('/api/use-hint', async (req, res) => {
   console.log('💡 Using hint...', req.body);
   
@@ -375,7 +497,7 @@ app.post('/api/use-hint', async (req, res) => {
   }
 });
 
-// API دریافت وضعیت بازی
+// دریافت وضعیت بازی
 app.get('/api/game-status/:gameId', async (req, res) => {
   try {
     const { gameId } = req.params;
@@ -418,12 +540,19 @@ app.get('/api/test', (req, res) => {
 const PORT = process.env.PORT || 10000;
 
 async function startServer() {
+  console.log('🚀 Initializing server...');
   await initializeDatabase();
   
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Server running on port ${PORT}`);
-    console.log(`📍 Health: http://0.0.0.0:${PORT}/health`);
-    console.log(`✅ API is ready!`);
+    console.log(`✅ Server running on port ${PORT}`);
+    console.log(`📍 Health: https://wordly-bot.onrender.com/health`);
+    console.log(`📍 Web App: ${WEB_APP_URL}`);
+    
+    if (BOT_TOKEN && BOT_TOKEN !== '8408419647:AAFivpMKAKSGoIWI0Qq8PJ_zrdhQK9wlJFo') {
+      console.log('🤖 Telegram Bot: ACTIVE');
+    } else {
+      console.log('🤖 Telegram Bot: DISABLED');
+    }
   });
 }
 
