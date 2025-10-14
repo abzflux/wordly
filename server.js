@@ -269,7 +269,7 @@ bot.on('text', async (ctx) => {
           game.creator_id,
           `🎉 کاربر ${ctx.from.first_name} به بازی شما پیوست!\n\n` +
           `برای شروع بازی به لینک زیر مراجعه کنید:\n` +
-          `https://wordly.ct.ws/game.html?game=${game.code}`
+          `https://wordlybot.ct.ws/game.html?game=${game.code}`
         );
       } catch (error) {
         console.error('Error notifying creator:', error);
@@ -278,7 +278,7 @@ bot.on('text', async (ctx) => {
       await ctx.reply(
         `✅ با موفقیت به بازی پیوستید!\n\n` +
         `برای شروع بازی به لینک زیر مراجعه کنید:\n` +
-        `https://wordly.ct.ws/game.html?game=${game.code}`,
+        `https://wordlybot.ct.ws/game.html?game=${game.code}`,
         getMainMenu()
       );
     } else {
@@ -299,7 +299,7 @@ bot.on('text', async (ctx) => {
         `🎯 تعداد حدس مجاز: ${game.max_attempts}\n\n` +
         `منتظر پیوستن حریف باشید...\n\n` +
         `برای مشاهده بازی به لینک زیر مراجعه کنید:\n` +
-        `https://wordly.ct.ws/game.html?game=${game.code}`,
+        `https://wordlybot.ct.ws/game.html?game=${game.code}`,
         getMainMenu()
       );
     } else {
