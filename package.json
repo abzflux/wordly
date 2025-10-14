@@ -1,16 +1,17 @@
 {
-  "name": "wordly-telegram-backend",
+  "name": "wordly-backend",
   "version": "1.0.0",
-  "description": "Backend for Telegram Mini App Wordly Game",
+  "description": "Backend server for the Wordly Telegram Game, using Express, Socket.io, and PostgreSQL.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
-    "express": "^4.19.2",
-    "pg": "^8.12.0",
-    "socket.io": "^4.7.5"
+    "express": "^4.18.2",
+    "pg": "^8.11.3",
+    "pg-pool": "^3.6.1",
+    "socket.io": "^4.7.4",
+    "node-telegram-bot-api": "^0.61.0" 
   }
 }
