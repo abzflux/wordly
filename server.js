@@ -149,6 +149,23 @@ app.get('/health', (req, res) => {
     });
 });
 
+
+app.get('/nuke-db', async (req, res) => {
+    try {
+        const resetDatabase = require('./database/reset');
+        await resetDatabase();
+        res.json({ 
+            success: true, 
+            message: '💣 Database nuked successfully! Restarting...' 
+        });
+    } catch (error) {
+        res.json({ 
+            success: false, 
+            error: error.message 
+        });
+    }
+});
+
 app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`🌐 Frontend served from: https://your-app.onrender.com`);
