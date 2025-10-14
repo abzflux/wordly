@@ -9,6 +9,14 @@ const PORT = process.env.PORT || 3000;
 // Middleware
 app.use(express.json());
 
+// Import API routes
+const gameRoutes = require('./routes/game');
+const leaderboardRoutes = require('./routes/leaderboard');
+
+// Use API routes
+app.use('/api/game', gameRoutes);
+app.use('/api/leaderboard', leaderboardRoutes);
+
 // از Web App خارجی استفاده می‌کنیم (wordlybot.ct.ws)
 const WEB_APP_URL = 'https://wordlybot.ct.ws';
 
@@ -194,9 +202,17 @@ app.get('/test-webapp', (req, res) => {
     });
 });
 
+// API health check
+app.get('/api/game/health', (req, res) => {
+    res.json({ 
+        status: 'API is working!',
+        timestamp: new Date().toISOString()
+    });
+});
+
 app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`🌐 Web App: ${WEB_APP_URL}`);
-    console.log(`📍 Health: https://your-app.onrender.com/health`);
-    console.log(`🔗 Test URLs: https://your-app.onrender.com/test-webapp`);
+    console.log(`📍 Health: https://wordlybot.onrender.com/health`);
+    console.log(`🔗 API Health: https://wordlybot.onrender.com/api/game/health`);
 });
