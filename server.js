@@ -1,17 +1,14 @@
 require('dotenv').config();
 const express = require('express');
-const { Telegraf, Markup, session } = require('telegraf');
 const { Pool } = require('pg');
 const cors = require('cors');
 
 const app = express();
 
 // تنظیمات
-const BOT_TOKEN = process.env.BOT_TOKEN;
 const WEB_APP_URL = process.env.WEB_APP_URL || 'https://wordly.ct.ws';
-const RENDER_URL = process.env.RENDER_EXTERNAL_URL || 'https://wordly-bot.onrender.com';
 
-console.log('🔧 Starting server...');
+console.log('🔧 Starting API Server...');
 
 // Middleware
 app.use(cors({
@@ -26,7 +23,7 @@ app.use(express.json());
 // Route اصلی
 app.get('/', (req, res) => {
   res.json({
-    message: '🎮 Wordly Game Server',
+    message: '🎮 Wordly Game API Server',
     status: 'active',
     timestamp: new Date().toISOString()
   });
@@ -58,10 +55,15 @@ async function initializeDatabase() {
     console.log('✅ Database connected');
 
     // حذف جدول‌های قدیمی اگر وجود دارند
-    await pool.query('DROP TABLE IF EXISTS leaderboard CASCADE');
-    await pool.query('DROP TABLE IF EXISTS active_games CASCADE');
+    try {
+      await pool.query('DROP TABLE IF EXISTS leaderboard CASCADE');
+      await pool.query('DROP TABLE IF EXISTS active_games CASCADE');
+      console.log('✅ Old tables dropped');
+    } catch (error) {
+      console.log('ℹ️ No old tables to drop');
+    }
 
-    // ایجاد جدول بازی‌های فعال با DEFAULT value
+    // ایجاد جدول بازی‌های فعال
     await pool.query(`
       CREATE TABLE active_games (
         game_id VARCHAR(20) PRIMARY KEY,
@@ -71,7 +73,7 @@ async function initializeDatabase() {
         opponent_name VARCHAR(255),
         word VARCHAR(50),
         category VARCHAR(100),
-        max_attempts INTEGER DEFAULT 10,
+        max_attempts INTEGER DEFAULT 10 NOT NULL,
         current_attempt INTEGER DEFAULT 0,
         used_letters TEXT DEFAULT '',
         correct_letters TEXT DEFAULT '',
@@ -105,82 +107,7 @@ async function initializeDatabase() {
   }
 }
 
-// راه‌اندازی ربات تلگرام
-let bot;
-if (BOT_TOKEN) {
-  console.log('🤖 Initializing Telegram Bot...');
-  
-  try {
-    bot = new Telegraf(BOT_TOKEN);
-
-    bot.use(session());
-
-    // دستور start
-    bot.start((ctx) => {
-      console.log('🎯 /start received from:', ctx.from.first_name);
-      
-      const menuText = `🎮 به بازی Wordly خوش آمدید ${ctx.from.first_name}!
-
-با دوستان خود به رقابت بپردازید و کلمات را حدس بزنید.`;
-
-      return ctx.reply(menuText, Markup.inlineKeyboard([
-        [Markup.button.webApp('🎮 شروع بازی دو نفره', `${WEB_APP_URL}/game.html`)],
-        [Markup.button.callback('🏆 جدول رده‌بندی', 'leaderboard')],
-        [Markup.button.callback('ℹ️ راهنما', 'help')]
-      ]));
-    });
-
-    // نمایش جدول رده‌بندی
-    bot.action('leaderboard', async (ctx) => {
-      try {
-        const result = await pool.query(`
-          SELECT user_name, score FROM leaderboard 
-          ORDER BY score DESC LIMIT 10
-        `);
-        
-        let leaderboardText = '🏆 10 نفر برتر:\n\n';
-        
-        if (result.rows.length === 0) {
-          leaderboardText += 'هنوز بازی‌ای ثبت نشده است.';
-        } else {
-          result.rows.forEach((row, index) => {
-            leaderboardText += `${index + 1}. ${row.user_name} - ${row.score} امتیاز\n`;
-          });
-        }
-        
-        await ctx.reply(leaderboardText);
-      } catch (error) {
-        await ctx.reply('خطا در دریافت اطلاعات.');
-      }
-    });
-
-    // راهنمای بازی
-    bot.action('help', (ctx) => {
-      const helpText = `📖 راهنمای بازی:
-
-1. "شروع بازی دو نفره" را بزنید
-2. لینک را برای دوست خود بفرستید
-3. کلمه و دسته‌بندی را وارد کنید
-4. دوست شما کلمه را حدس می‌زند`;
-
-      return ctx.reply(helpText);
-    });
-
-    // استفاده از Polling به جای Webhook
-    bot.launch({
-      webhook: false
-    }).then(() => {
-      console.log('✅ Telegram Bot started with Polling');
-    });
-
-  } catch (error) {
-    console.error('❌ Bot initialization failed:', error);
-  }
-} else {
-  console.log('⚠️ Bot is disabled - BOT_TOKEN not set');
-}
-
-// API ایجاد بازی - اصلاح شده
+// API ایجاد بازی
 app.post('/api/create-game', async (req, res) => {
   console.log('📝 Creating game...', req.body);
   
@@ -196,10 +123,12 @@ app.post('/api/create-game', async (req, res) => {
 
     const gameId = Math.random().toString(36).substring(2, 8).toUpperCase();
     
-    // استفاده از مقدار DEFAULT برای max_attempts
+    // مقدار پیش‌فرض برای max_attempts
+    const maxAttempts = 10;
+    
     await pool.query(
-      'INSERT INTO active_games (game_id, creator_id, creator_name) VALUES ($1, $2, $3)',
-      [gameId, userId, userName]
+      'INSERT INTO active_games (game_id, creator_id, creator_name, max_attempts) VALUES ($1, $2, $3, $4)',
+      [gameId, userId, userName, maxAttempts]
     );
     
     console.log('✅ Game created:', gameId);
@@ -212,7 +141,7 @@ app.post('/api/create-game', async (req, res) => {
     console.error('❌ Error creating game:', error);
     res.status(500).json({ 
       success: false, 
-      error: 'خطا در ایجاد بازی: ' + error.message 
+      error: 'خطا در ایجاد بازی' 
     });
   }
 });
@@ -493,8 +422,8 @@ async function startServer() {
   
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Server running on port ${PORT}`);
-    console.log(`📍 API Base: ${RENDER_URL}`);
-    console.log(`📍 Health: ${RENDER_URL}/health`);
+    console.log(`📍 Health: http://0.0.0.0:${PORT}/health`);
+    console.log(`✅ API is ready!`);
   });
 }
 
