@@ -197,6 +197,6 @@ app.get('/test-webapp', (req, res) => {
 app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`🌐 Web App: ${WEB_APP_URL}`);
-    console.log(`📍 Health: https://your-app.onrender.com/health`);
-    console.log(`🔗 Test URLs: https://your-app.onrender.com/test-webapp`);
+    console.log(`📍 Health: https://worldybot.onrender.com/health`);
+    console.log(`🔗 Test URLs: https://worldybot.onrender.com/test-webapp`);
 });
