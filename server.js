@@ -248,6 +248,24 @@ io.on('connection', (socket) => {
             socket.join(`user:${userId}`);
             console.log(`👤 کاربر وارد شد: ${name} (${userId})`);
             
+            // --- NEW: منطق اتصال مجدد خودکار به بازی فعال ---
+            const activeGamesResult = await pool.query(
+                `SELECT code FROM games 
+                WHERE (creator_id = $1 OR guesser_id = $1) 
+                AND status IN ('waiting', 'in_progress')`, 
+                [userId]
+            );
+
+            if (activeGamesResult.rows.length > 0) {
+                const gameCode = activeGamesResult.rows[0].code;
+                socket.join(gameCode);
+                console.log(`🔗 کاربر ${userId} به بازی فعال ${gameCode} ملحق شد.`);
+                
+                // ارسال وضعیت بازی برای کلاینت متصل شده
+                await emitGameState(gameCode); 
+            }
+            // --- END NEW LOGIC ---
+
             // ارسال وضعیت خوشامدگویی
             socket.emit('login_success', { name, userId });
 
@@ -556,7 +574,8 @@ io.on('connection', (socket) => {
         }
     });
 
-    // --- (۷) جوین شدن به اتاق بازی برای سازنده ---
+    // --- (۷) جوین شدن به اتاق بازی برای سازنده (فقط برای اطمینان در مورد بازی های قدیمی) ---
+    // این تابع اکنون با منطق rejoin در user_login همپوشانی دارد.
     socket.on('join_game_room', async (gameCode) => {
         socket.join(gameCode);
         await emitGameState(gameCode);
