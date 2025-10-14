@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { query } = require('../database/db');
 const GameLogic = require('../utils/gameLogic');
-const { sanitizeInput } = require('../utils/helpers');
+const { sanitizeInput, isPersian } = require('../utils/helpers');
 
 // Get game state
 router.get('/state/:code', async (req, res) => {
@@ -204,6 +204,55 @@ router.post('/hint', async (req, res) => {
     res.json({ hint: randomHint, penalty: 15 });
   } catch (error) {
     console.error('Error getting hint:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Start game (when opponent joins)
+router.post('/start', async (req, res) => {
+  try {
+    const { code } = req.body;
+    
+    const gameResult = await query(
+      'SELECT * FROM games WHERE code = $1 AND status = $2',
+      [code, 'ready']
+    );
+
+    if (gameResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Game not found or not ready to start' });
+    }
+
+    await query(
+      'UPDATE games SET status = $1, start_time = $2 WHERE code = $3',
+      ['active', new Date(), code]
+    );
+
+    res.json({ success: true, message: 'Game started successfully' });
+  } catch (error) {
+    console.error('Error starting game:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get active games for user
+router.get('/user/:userId/active', async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const activeGames = await query(
+      `SELECT g.*, u1.first_name as creator_name, u2.first_name as opponent_name
+       FROM games g
+       LEFT JOIN users u1 ON g.creator_id = u1.telegram_id
+       LEFT JOIN users u2 ON g.opponent_id = u2.telegram_id
+       WHERE (g.creator_id = $1 OR g.opponent_id = $1)
+       AND g.status IN ('waiting', 'ready', 'active')
+       ORDER BY g.created_at DESC`,
+      [userId]
+    );
+
+    res.json({ games: activeGames.rows });
+  } catch (error) {
+    console.error('Error fetching active games:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
