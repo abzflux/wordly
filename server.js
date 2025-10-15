@@ -129,7 +129,7 @@ async function setupDatabase() {
                 guessed_letters VARCHAR(1)[] DEFAULT '{}',
                 start_time TIMESTAMP WITH TIME ZONE,
                 end_time TIMESTAMP WITH TIME ZONE,
-                status VARCHAR(20) DEFAULT 'waiting' CHECK (status IN ('waiting', 'in_progress', 'finished')),
+                status VARCHAR(20) DEFAULT 'waiting' CHECK (status IN ('waiting', 'in_progress', 'finished', 'cancelled')),
                 winner_id VARCHAR(255),
                 FOREIGN KEY (guesser_id) REFERENCES users(telegram_id),
                 FOREIGN KEY (winner_id) REFERENCES users(telegram_id)
@@ -854,9 +854,83 @@ io.on('connection', (socket) => {
         }
     });
 
+    // --- (۷) انصراف از بازی ---
+    socket.on('cancel_game', async ({ userId, gameCode }) => {
+        try {
+            const gameResult = await pool.query('SELECT * FROM games WHERE code = $1', [gameCode]);
+            const game = gameResult.rows[0];
+
+            if (!game) {
+                return socket.emit('game_error', { message: 'بازی مورد نظر یافت نشد.' });
+            }
+
+            // بررسی اینکه کاربر در این بازی باشد
+            if (game.creator_id !== userId && game.guesser_id !== userId) {
+                return socket.emit('game_error', { message: 'شما در این بازی نیستید.' });
+            }
+
+            // بررسی وضعیت بازی
+            if (game.status !== 'in_progress') {
+                return socket.emit('game_error', { message: 'این بازی قابل انصراف نیست.' });
+            }
+
+            // محاسبه امتیاز بر اساس پیشرفت بازی
+            let pointsDeduction = 0;
+            const totalLetters = game.word.length;
+            const revealedCount = Object.values(game.revealed_letters).flat().length;
+            const progressPercentage = (revealedCount / totalLetters) * 100;
+
+            if (revealedCount === 0) {
+                // اگر هیچ حرفی حدس زده نشده، بازی لغو می‌شود و امتیازی کسر نمی‌شود
+                pointsDeduction = 0;
+                
+                // بازی به حالت انتظار برمی‌گردد تا کاربر دیگری بتواند بپیوندد
+                await pool.query(
+                    'UPDATE games SET guesser_id = NULL, status = $1, start_time = NULL WHERE code = $2',
+                    ['waiting', gameCode]
+                );
+
+                io.to(gameCode).emit('message', { 
+                    type: 'info', 
+                    text: `❌ ${currentUserName} از بازی انصراف داد. بازی در حالت انتظار برای کاربر جدید قرار گرفت.` 
+                });
+
+            } else {
+                // اگر حداقل یک حرف حدس زده شده، امتیاز منفی محاسبه می‌شود
+                pointsDeduction = Math.floor(-20 * (progressPercentage / 100));
+                
+                await pool.query(
+                    'UPDATE games SET status = $1, end_time = NOW() WHERE code = $2',
+                    ['cancelled', gameCode]
+                );
+
+                // اعمال امتیاز منفی
+                await updateScoreAndEmitLeaderboard(userId, pointsDeduction);
+
+                io.to(gameCode).emit('message', { 
+                    type: 'warning', 
+                    text: `⚠️ ${currentUserName} از بازی انصراف داد. (${pointsDeduction} امتیاز)` 
+                });
+
+                io.to(gameCode).emit('game_cancelled', { 
+                    cancelledBy: currentUserName,
+                    pointsDeduction: pointsDeduction,
+                    progress: Math.floor(progressPercentage)
+                });
+            }
+
+            console.log(`❌ کاربر ${userId} از بازی ${gameCode} انصراف داد. امتیاز کسر شده: ${pointsDeduction}`);
+            await emitGameState(gameCode);
+
+        } catch (error) {
+            console.error('❌ خطای انصراف از بازی:', error);
+            socket.emit('game_error', { message: 'خطا در انصراف از بازی.' });
+        }
+    });
+
     // --- NEW: منطق لیگ ---
 
-    // --- (۷) پیوستن به لیگ ---
+    // --- (۸) پیوستن به لیگ ---
     socket.on('joinLeague', async ({ userId, userName }) => {
         try {
             if (!userId || !userName) {
@@ -954,7 +1028,7 @@ io.on('connection', (socket) => {
         }
     });
 
-    // --- (۸) حدس زدن در لیگ ---
+    // --- (۹) حدس زدن در لیگ ---
     socket.on('submitLeagueGuess', async ({ userId, letter }) => {
         try {
             if (!userId || !letter) {
@@ -1133,7 +1207,7 @@ io.on('connection', (socket) => {
         }
     });
 
-    // --- (۹) دریافت وضعیت لیگ ---
+    // --- (۱۰) دریافت وضعیت لیگ ---
     socket.on('getLeagueStatus', async () => {
         try {
             if (!currentUserId) return;
@@ -1166,7 +1240,7 @@ io.on('connection', (socket) => {
         }
     });
 
-    // --- (۱۰) جوین شدن به اتاق بازی ---
+    // --- (۱۱) جوین شدن به اتاق بازی ---
     socket.on('join_game_room', async (gameCode) => {
         if (gameCode) {
             socket.join(gameCode);
