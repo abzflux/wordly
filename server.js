@@ -7,11 +7,6 @@ const cors = require('cors');
 // --- NEW: Telegram Bot Library ---
 const TelegramBot = require('node-telegram-bot-api');
 // ---------------------------------
-// --- NEW: Security Dependencies for InitData Validation ---
-const crypto = require('crypto');
-const querystring = require('querystring');
-// ----------------------------------------------------------
-
 
 // --- تنظیمات و متغیرهای محیطی ---
 // توجه: در محیط رندر (render.com)، متغیرهای محیطی باید به درستی تنظیم شوند.
@@ -338,6 +333,7 @@ async function emitLeaderboard() {
 }
 
 // --- NEW: توابع کمکی لیگ ---
+
 /**
  * تولید کلمه تصادفی برای لیگ
  * @returns {Object} شیء حاوی کلمه و دسته‌بندی
@@ -347,7 +343,11 @@ function getRandomLeagueWord() {
     const randomCategory = categories[Math.floor(Math.random() * categories.length)];
     const wordsInCategory = leagueWords[randomCategory];
     const randomWord = wordsInCategory[Math.floor(Math.random() * wordsInCategory.length)];
-    return { word: randomWord, category: randomCategory };
+    
+    return {
+        word: randomWord,
+        category: randomCategory
+    };
 }
 
 /**
@@ -374,12 +374,240 @@ function calculateLeagueScore(status, maxGuesses, guessesLeft, timeTaken) {
 }
 
 /**
+ * ارسال وضعیت لیگ به تمام بازیکنان
+ * @param {string} leagueCode کد لیگ
+ */
+async function emitLeagueState(leagueCode) {
+    try {
+        // دریافت اطلاعات لیگ
+        const leagueResult = await pool.query('SELECT * FROM leagues WHERE code = $1', [leagueCode]);
+        const league = leagueResult.rows[0];
+        
+        if (!league) return;
+
+        // دریافت بازیکنان لیگ
+        const playersResult = await pool.query(`
+            SELECT u.telegram_id, u.name, lp.score, lp.correct_words, lp.total_time
+            FROM league_players lp
+            JOIN users u ON lp.user_id = u.telegram_id
+            WHERE lp.league_id = $1
+            ORDER BY lp.score DESC
+        `, [league.id]);
+
+        const players = playersResult.rows;
+
+        // دریافت کلمه فعلی
+        let currentWord = null;
+        let currentCategory = null;
+        let currentMaxGuesses = null;
+        
+        if (league.status === 'in_progress' || league.status === 'starting') {
+            const currentWordResult = await pool.query(`
+                SELECT word, category, max_guesses FROM league_words 
+                WHERE league_id = $1 AND word_number = $2
+            `, [league.id, league.current_word_number]);
+            
+            if (currentWordResult.rows.length > 0) {
+                currentWord = currentWordResult.rows[0].word;
+                currentCategory = currentWordResult.rows[0].category;
+                currentMaxGuesses = currentWordResult.rows[0].max_guesses;
+            }
+        }
+
+        // ساخت وضعیت لیگ برای ارسال
+        const leagueState = {
+            code: league.code,
+            status: league.status,
+            currentWordNumber: league.current_word_number,
+            totalWords: league.total_words,
+            players: players,
+            // کلمه اصلی نباید به کلاینت ارسال شود، اما متغیرها را نگه می‌داریم
+            // currentWord: currentWord, 
+            currentCategory: currentCategory,
+            currentWordLength: currentWord ? currentWord.length : 0,
+            currentMaxGuesses: currentMaxGuesses
+        };
+
+        // ارسال به تمام بازیکنان لیگ
+        io.to(leagueCode).emit('leagueStatus', leagueState);
+        console.log(`📡 وضعیت جدید لیگ ${leagueCode} ارسال شد.`);
+
+    } catch (error) {
+        console.error(`❌ خطای ارسال وضعیت لیگ ${leagueCode}:`, error);
+    }
+}
+
+/**
+ * شروع لیگ جدید
+ * @param {string} leagueCode کد لیگ
+ */
+async function startLeague(leagueCode) {
+    let client;
+    try {
+        client = await pool.connect();
+        await client.query('BEGIN');
+
+        // به‌روزرسانی وضعیت لیگ
+        const leagueResult = await client.query(
+            'UPDATE leagues SET status = $1, start_time = NOW() WHERE code = $2 RETURNING id, total_words', 
+            ['starting', leagueCode]
+        );
+        const league = leagueResult.rows[0];
+        const leagueId = league.id;
+        const totalWords = league.total_words;
+
+        // تولید کلمات تصادفی برای لیگ
+        const words = [];
+        for (let i = 1; i <= totalWords; i++) {
+            const { word, category } = getRandomLeagueWord();
+            words.push({ 
+                league_id: leagueId, 
+                word_number: i, 
+                word: word, 
+                category: category, 
+                max_guesses: Math.ceil(word.length * 1.5), 
+                status: 'pending' // همه را pending شروع می‌کنیم و در startLeagueWord اولی active می‌شود
+            });
+        }
+
+        // ذخیره کلمات در دیتابیس
+        for (const wordData of words) {
+            await client.query(`
+                INSERT INTO league_words (league_id, word_number, word, category, max_guesses, status)
+                VALUES ($1, $2, $3, $4, $5, $6)
+            `, [wordData.league_id, wordData.word_number, wordData.word, wordData.category, wordData.max_guesses, wordData.status]);
+        }
+        
+        await client.query('COMMIT');
+        client.release();
+
+        // شروع اولین کلمه پس از تأخیر
+        setTimeout(async () => {
+            await startLeagueWord(leagueCode, 1);
+        }, 3000); // تأخیر 3 ثانیه برای آماده‌سازی
+        
+        // ارسال وضعیت جدید
+        await emitLeagueState(leagueCode);
+        
+    } catch (error) {
+        console.error(`❌ خطای شروع لیگ ${leagueCode}:`, error);
+        if (client) {
+            await client.query('ROLLBACK');
+            client.release();
+        }
+    }
+}
+
+
+/**
+ * شروع کلمه جدید در لیگ یا ادامه لیگ
+ * @param {string} leagueCode کد لیگ
+ * @param {number} wordNumber شماره کلمه
+ */
+async function startLeagueWord(leagueCode, wordNumber) {
+    let client;
+    try {
+        client = await pool.connect();
+        await client.query('BEGIN');
+
+        // 1. به‌روزرسانی وضعیت لیگ و کلمات
+        const leagueResult = await client.query(
+            'UPDATE leagues SET status = $1, current_word_number = $2 WHERE code = $3 RETURNING id, total_words', 
+            ['in_progress', wordNumber, leagueCode]
+        );
+        const leagueId = leagueResult.rows[0].id;
+        const totalWords = leagueResult.rows[0].total_words;
+
+        // اگر کلمه جدید از کل کلمات بیشتر بود، لیگ را پایان می‌دهیم
+        if (wordNumber > totalWords) {
+            await client.query('COMMIT');
+            client.release();
+            return endLeague(leagueCode);
+        }
+
+        // به‌روزرسانی وضعیت کلمه قبلی به 'completed' (اگر وجود داشت)
+        if (wordNumber > 1) {
+            await client.query(`
+                UPDATE league_words SET status = 'completed' WHERE league_id = $1 AND word_number = $2 
+            `, [leagueId, wordNumber - 1]);
+        }
+
+        // به‌روزرسانی وضعیت کلمه جدید به 'active' و دریافت جزئیات
+        const currentWordDetailsResult = await client.query(`
+            UPDATE league_words SET status = 'active' WHERE league_id = $1 AND word_number = $2 
+            RETURNING word, category, max_guesses
+        `, [leagueId, wordNumber]);
+        
+        if (currentWordDetailsResult.rows.length === 0) {
+            // خطای غیرمنتظره: کلمه در دیتابیس نیست
+            await client.query('ROLLBACK');
+            client.release();
+            return console.error(`❌ کلمه ${wordNumber} برای لیگ ${leagueCode} یافت نشد.`);
+        }
+        
+        const { word, category, max_guesses } = currentWordDetailsResult.rows[0];
+
+        // 2. ایجاد رکوردهای جدید برای بازیکنان برای کلمه فعال
+        const playersResult = await client.query(`
+            SELECT user_id FROM league_players WHERE league_id = $1
+        `, [leagueId]);
+
+        for (const player of playersResult.rows) {
+            await client.query(`
+                INSERT INTO league_player_words (league_id, user_id, word_number, word, category, max_guesses, guesses_left, start_time)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+                ON CONFLICT (league_id, user_id, word_number) DO UPDATE SET 
+                    word = EXCLUDED.word, 
+                    category = EXCLUDED.category, 
+                    max_guesses = EXCLUDED.max_guesses, 
+                    guesses_left = EXCLUDED.guesses_left, 
+                    start_time = NOW(),
+                    end_time = NULL,
+                    status = 'in_progress',
+                    score_earned = 0,
+                    correct_guesses = 0,
+                    incorrect_guesses = 0,
+                    revealed_letters = '{}',
+                    guessed_letters = '{}'
+            `, [leagueId, player.user_id, wordNumber, word, category, max_guesses, max_guesses]);
+        }
+
+        await client.query('COMMIT');
+        client.release();
+
+        // ارسال وضعیت جدید
+        await emitLeagueState(leagueCode);
+
+        // اطلاع‌رسانی شروع کلمه جدید
+        io.to(leagueCode).emit('leagueWordStarted', { 
+            code: leagueCode, 
+            currentWordNumber: wordNumber, 
+            totalWords: totalWords, 
+            currentCategory: category,
+            currentWordLength: word.length,
+            currentMaxGuesses: max_guesses
+        });
+        
+        console.log(`📝 کلمه ${wordNumber} در لیگ ${leagueCode} شروع شد.`);
+
+    } catch (error) {
+        console.error(`❌ خطای شروع کلمه جدید در لیگ ${leagueCode}:`, error);
+        if (client) {
+            await client.query('ROLLBACK');
+            client.release();
+        }
+    }
+}
+
+
+/**
  * پایان لیگ
  * @param {string} leagueCode کد لیگ
  */
 async function endLeague(leagueCode) {
+    let client;
     try {
-        const client = await pool.connect();
+        client = await pool.connect();
         await client.query('BEGIN');
 
         // 1. به‌روزرسانی وضعیت لیگ
@@ -391,339 +619,253 @@ async function endLeague(leagueCode) {
 
         // 2. محاسبه برنده و اعمال امتیاز کلی به جدول users
         const winnerResult = await client.query(`
-            SELECT u.telegram_id, u.name, lp.score, rank() OVER (ORDER BY lp.score DESC, lp.total_time ASC) as rank
+            SELECT u.telegram_id, u.name, lp.score, rank() OVER (ORDER BY lp.score DESC, lp.total_time ASC) as rank 
             FROM league_players lp
             JOIN users u ON lp.user_id = u.telegram_id
             WHERE lp.league_id = $1
-            ORDER BY lp.score DESC, lp.total_time ASC
+            ORDER BY lp.score DESC, lp.total_time ASC 
             LIMIT 1
         `, [leagueId]);
 
         if (winnerResult.rows.length > 0) {
             const winner = winnerResult.rows[0];
-            const bonusScore = winner.score;
+            const bonusScore = winner.score; // امتیاز کلی لیگ به عنوان امتیاز جایزه به کاربر اضافه می‌شود
+            
+            // اعمال امتیاز به جدول users
             await client.query('UPDATE users SET score = score + $1 WHERE telegram_id = $2', [bonusScore, winner.telegram_id]);
-            await emitLeaderboard();
-            
-            io.to(leagueCode).emit('leagueEnded', {
-                winnerId: winner.telegram_id,
-                winnerScore: winner.score,
-                message: `لیگ به پایان رسید! برنده: **${winner.name}** با امتیاز ${winner.score}`
-            });
-            console.log(`🏆 لیگ ${leagueCode} به پایان رسید. برنده: ${winner.name}`);
-        } else {
-            io.to(leagueCode).emit('leagueEnded', { message: 'لیگ به پایان رسید. برنده مشخص نشد.' });
-            console.log(`🏆 لیگ ${leagueCode} به پایان رسید. بازیکنی وجود نداشت.`);
-        }
-
-        await client.query('COMMIT');
-        client.release();
-    } catch (error) {
-        console.error(`❌ خطای پایان دادن به لیگ ${leagueCode}:`, error);
-        await client.query('ROLLBACK');
-        client.release();
-        io.to(leagueCode).emit('league_error', { message: 'خطای داخلی در پایان لیگ.' });
-    }
-}
-
-/**
- * وضعیت لیگ را به کلاینت‌ها ارسال می‌کند
- * @param {string} leagueCode کد لیگ
- */
-async function emitLeagueState(leagueCode) {
-    try {
-        const leagueResult = await pool.query('SELECT id, code, status, current_word_number, total_words, start_time, end_time FROM leagues WHERE code = $1', [leagueCode]);
-        const league = leagueResult.rows[0];
-
-        if (!league) {
-            return io.to(leagueCode).emit('league_error', { message: 'لیگ مورد نظر یافت نشد.' });
-        }
-
-        // 1. دریافت کلمه فعال فعلی
-        const currentWordResult = await pool.query('SELECT word, category, max_guesses FROM league_words WHERE league_id = $1 AND word_number = $2', [league.id, league.current_word_number]);
-        const currentWord = currentWordResult.rows[0];
-
-        // 2. دریافت وضعیت بازیکنان در کلمه فعلی
-        const playersWordStatusResult = await pool.query(`
-            SELECT 
-                lpw.user_id,
-                u.name,
-                lpw.guesses_left,
-                lpw.revealed_letters,
-                lpw.guessed_letters,
-                lpw.status,
-                lpw.time_taken,
-                lpw.start_time,
-                (SELECT score FROM league_players WHERE league_id = $1 AND user_id = u.telegram_id) as total_league_score
-            FROM league_player_words lpw
-            JOIN users u ON lpw.user_id = u.telegram_id
-            WHERE lpw.league_id = $1 AND lpw.word_number = $2
-            ORDER BY total_league_score DESC
-        `, [league.id, league.current_word_number]);
-        
-        // 3. ترکیب اطلاعات
-        const leagueState = {
-            code: league.code,
-            status: league.status,
-            currentWordNumber: league.current_word_number,
-            totalWords: league.total_words,
-            startTime: league.start_time,
-            wordLength: currentWord ? currentWord.word.length : 0,
-            category: currentWord ? currentWord.category : 'N/A',
-            maxGuesses: currentWord ? currentWord.max_guesses : 0,
-            players: playersWordStatusResult.rows.map(p => ({
-                userId: p.user_id,
-                name: p.name,
-                totalLeagueScore: p.total_league_score,
-                guessesLeft: p.guesses_left,
-                revealedLetters: p.revealed_letters,
-                guessedLetters: p.guessed_letters,
-                wordStatus: p.status,
-                timeTaken: p.time_taken,
-                startTime: p.start_time
-            }))
-        };
-        
-        // 4. ارسال وضعیت
-        io.to(leagueCode).emit('league_update', leagueState);
-        console.log(`📡 وضعیت جدید لیگ ${leagueCode} ارسال شد.`);
-
-    } catch (error) {
-        console.error(`❌ خطای ارسال وضعیت لیگ ${leagueCode}:`, error);
-        io.to(leagueCode).emit('league_error', { message: 'خطا در دریافت وضعیت لیگ.' });
-    }
-}
-
-
-// --- NEW: تابع اعتبارسنجی InitData (رفع خطای BIGINT) ---
-/**
- * اعتبارسنجی InitData تلگرام با استفاده از BOT_TOKEN و استخراج ایمن user ID.
- * @param {string} initData - رشته query string از Telegram WebApp
- * @param {string} botToken - توکن ربات
- * @returns {Object} شیء حاوی { id, name } کاربر.
- * @throws {Error} اگر اعتبارسنجی ناموفق باشد.
- */
-function validateInitData(initData, botToken) {
-    // 1. پارس کردن داده
-    const data = querystring.parse(initData);
-    const hash = data.hash;
-    delete data.hash;
-
-    // 2. ساخت رشته بررسی هش (check_data_string)
-    const dataCheckString = Object.keys(data)
-        .sort()
-        .map(key => (`${key}=${data[key]}`))
-        .join('\n');
-
-    // 3. محاسبه secretKey
-    const secretKey = crypto.createHmac('sha256', 'WebAppData')
-        .update(botToken)
-        .digest();
-
-    // 4. محاسبه هش
-    const calculatedHash = crypto.createHmac('sha256', secretKey)
-        .update(dataCheckString)
-        .digest('hex');
-    
-    // 5. بررسی صحت هش
-    if (calculatedHash !== hash) {
-        throw new Error('اعتبارسنجی InitData تلگرام ناموفق: هش نامعتبر است.');
-    }
-    
-    // 6. استخراج اطلاعات کاربر
-    if (data.user) {
-        const user = JSON.parse(data.user);
-        // اطمینان از وجود ID و تبدیل آن به رشته برای سازگاری با BIGINT در pg
-        if (!user || !user.id) {
-            throw new Error('اعتبارسنجی InitData تلگرام ناموفق: شناسه کاربری یافت نشد.');
-        }
-        // توجه: ID را به عنوان رشته برمی‌گردانیم تا از خطای BIGINT در دیتابیس جلوگیری شود.
-        return {
-            id: String(user.id), 
-            name: user.first_name || user.username || 'کاربر ناشناس'
-        };
-    }
-
-    throw new Error('اعتبارسنجی InitData تلگرام ناموفق: داده کاربری یافت نشد.');
-}
-
-
-// --- مدیریت ارتباطات Socket.io ---
-
-// --- (۱) احراز هویت کاربر Mini App (اصلاح شده برای رفع خطای BIGINT) ---
-io.on('connection', (socket) => {
-    let currentUserId = null;
-    let currentUserData = null; // برای ذخیره اطلاعات کاربر
-    
-    console.log(`➕ کاربر جدید متصل شد: ${socket.id}`);
-
-    /**
-     * @param {string} loginPayload - رشته initData از تلگرام WebApp (یا رشته JSON مالفرم شده)
-     */
-    socket.on('user_login', async (loginPayload) => {
-        let user;
-        
-        try {
-            console.log(`📡 تلاش برای احراز هویت با داده: ${loginPayload.substring(0, 50)}...`);
-
-            // 1. اعتبارسنجی InitData (روش صحیح)
-            // این تابع داده را از نظر امنیتی اعتبارسنجی کرده و ID را استخراج می‌کند.
-            user = validateInitData(loginPayload, BOT_TOKEN);
-            
-        } catch (authError) {
-            
-            // 2. مدیریت Payload مالفرم شده (مانند رشته JSON که خطا می‌داد)
-            // این بلوک تلاش می‌کند تا داده‌های نامعتبر را پارس کند
-            // تا حداقل user ID را استخراج کرده و مانع از خطای دیتابیس BIGINT شود.
-            try {
-                const malformedData = JSON.parse(loginPayload);
-                if (malformedData && malformedData.userId) {
-                    user = {
-                        id: String(malformedData.userId), // استخراج و تبدیل به رشته (رفع خطای BIGINT)
-                        name: malformedData.name || 'کاربر ناشناس',
-                    };
-                    console.warn(`⚠️ هشدار: استفاده از داده JSON مالفرم شده به جای InitData. خطای اصلی: ${authError.message}`);
-                } else {
-                    // اگر نه InitData معتبر بود و نه JSON مالفرم، خطای اصلی را پرتاب کن.
-                    throw authError; 
-                }
-            } catch (jsonError) {
-                // اگر Payload کلا نه JSON بود نه InitData، خطا را به کاربر نشان بده.
-                console.error(`❌ خطای احراز هویت: داده ارسالی نامعتبر است.`, jsonError);
-                return socket.emit('auth_error', { message: 'خطا در احراز هویت. داده ارسالی نامعتبر است.' });
-            }
-        }
-
-        try {
-            // **احراز هویت موفقیت آمیز**
-            currentUserId = user.id; 
-            currentUserData = user;
-
-            // **کوئری دیتابیس با استفاده از ID صحیح (جلوگیری از خطای BIGINT)**
-            await pool.query(
-                `INSERT INTO users (telegram_id, name) VALUES ($1, $2)
-                ON CONFLICT (telegram_id) DO UPDATE SET name = EXCLUDED.name`,
-                [currentUserId, currentUserData.name] // $1 یک رشته است که PostgreSQL آن را به BIGINT تبدیل می‌کند
-            );
-
-            const userInfoResult = await pool.query('SELECT telegram_id, name, score FROM users WHERE telegram_id = $1', [currentUserId]);
-            const dbUser = userInfoResult.rows[0];
-
-            // منطق پیوستن مجدد به اتاق‌های فعال (Rejoin)
-            const activeGamesResult = await pool.query(
-                `SELECT code FROM games 
-                 WHERE (creator_id = $1 OR guesser_id = $1) 
-                 AND status IN ('waiting', 'in_progress')`,
-                [currentUserId]
-            );
-
-            activeGamesResult.rows.forEach(game => {
-                socket.join(game.code);
-            });
-            
-            // پیوستن به اتاق لیگ فعال
-            const activeLeagueResult = await pool.query(
-                `SELECT l.code FROM leagues l JOIN league_players lp 
-                 ON l.id = lp.league_id 
-                 WHERE lp.user_id = $1 AND l.status IN ('starting', 'in_progress')`,
-                [currentUserId]
-            );
-            if (activeLeagueResult.rows.length > 0) {
-                 socket.join(activeLeagueResult.rows[0].code);
-            }
-
-
-            socket.emit('auth_success', { 
-                id: dbUser.telegram_id, 
-                name: dbUser.name, 
-                score: dbUser.score, 
-            });
-            
-            console.log(`✅ کاربر ${currentUserId} (${dbUser.name}) با موفقیت احراز هویت شد.`);
-
-        } catch (error) {
-            console.error('❌ خطای احراز هویت (دیتابیس/نهایی):', error.message);
-            socket.emit('auth_error', { message: 'خطا در احراز هویت. لطفا ربات را دوباره اجرا کنید.' });
-        }
-    });
-
-
-    // --- (۲) ساخت بازی جدید ---
-    socket.on('create_game', async ({ word, category }) => {
-        if (!currentUserId) return socket.emit('game_error', { message: 'ابتدا باید احراز هویت شوید.' });
-        if (!word || !category) return socket.emit('game_error', { message: 'کلمه و دسته‌بندی نمی‌توانند خالی باشند.' });
-
-        const client = await pool.connect();
-        try {
-            await client.query('BEGIN');
-            
-            // 1. تولید کد یکتا
-            let gameCode = generateGameCode();
-            let codeExistsResult = await client.query('SELECT 1 FROM games WHERE code = $1', [gameCode]);
-            while (codeExistsResult.rows.length > 0) {
-                gameCode = generateGameCode();
-                codeExistsResult = await client.query('SELECT 1 FROM games WHERE code = $1', [gameCode]);
-            }
-
-            // 2. درج بازی
-            // تنظیمات پیش‌فرض: 10 حدس، بدون حرف آشکار
-            const max_guesses = 10; 
-            const result = await client.query(
-                `INSERT INTO games (code, creator_id, word, category, max_guesses, guesses_left, status)
-                 VALUES ($1, $2, $3, $4, $5, $5, 'waiting') RETURNING *`,
-                [gameCode, currentUserId, word, category, max_guesses]
-            );
-            
-            const newGame = result.rows[0];
             
             await client.query('COMMIT');
             client.release();
 
-            socket.join(gameCode);
-            await emitGameState(gameCode);
+            await emitLeaderboard(); // به‌روزرسانی جدول رتبه‌بندی جهانی
             
-            socket.emit('game_created', { 
-                code: gameCode, 
-                message: `بازی شما با کد **${gameCode}** ساخته شد. منتظر حدس‌زننده بمانید.`
+            io.to(leagueCode).emit('leagueEnded', { 
+                winnerId: winner.telegram_id, 
+                winnerScore: winner.score, 
+                message: `لیگ به پایان رسید! برنده: **${winner.name}** با امتیاز ${winner.score}` 
             });
+            console.log(`🏆 لیگ ${leagueCode} به پایان رسید. برنده: ${winner.telegram_id}`);
+        } else {
+            await client.query('COMMIT');
+            client.release();
 
-        } catch (error) {
+            io.to(leagueCode).emit('leagueEnded', { message: 'لیگ به پایان رسید.' });
+        }
+        
+        await emitLeagueState(leagueCode); // ارسال وضعیت 'ended'
+        
+    } catch (error) {
+        console.error(`❌ خطای پایان لیگ ${leagueCode}:`, error);
+        if (client) {
             await client.query('ROLLBACK');
             client.release();
-            console.error('❌ خطای ساخت بازی:', error);
-            socket.emit('game_error', { message: 'خطا در ساخت بازی.' });
         }
-    });
+    }
+}
 
-    // --- (۳) دریافت لیست بازی‌های منتظر (برای جوین شدن) ---
-    socket.on('get_waiting_games', async () => {
-        if (!currentUserId) return;
+
+/**
+ * به‌روزرسانی وضعیت یک کلمه حدس زده شده در لیگ و محاسبه امتیاز
+ * @param {object} playerWordDetails جزئیات وضعیت کلمه بازیکن
+ * @param {string} leagueCode کد لیگ
+ */
+async function finalizeLeagueWord(playerWordDetails, leagueCode) {
+    let client;
+    try {
+        client = await pool.connect();
+        await client.query('BEGIN');
+        
+        const { id, league_id, user_id, word_number, word, max_guesses, guesses_left, start_time, status } = playerWordDetails;
+        
+        // محاسبه زمان صرف شده و امتیاز
+        const endTime = new Date();
+        const timeTaken = Math.floor((endTime.getTime() - new Date(start_time).getTime()) / 1000); // به ثانیه
+        const scoreEarned = calculateLeagueScore(status, max_guesses, guesses_left, timeTaken);
+        
+        // به‌روزرسانی رکورد league_player_words
+        await client.query(`
+            UPDATE league_player_words 
+            SET end_time = $1, time_taken = $2, score_earned = $3, status = $4
+            WHERE id = $5
+        `, [endTime, timeTaken, scoreEarned, status, id]);
+
+        // به‌روزرسانی رکورد league_players
+        const leaguePlayerUpdateQuery = `
+            UPDATE league_players 
+            SET 
+                score = score + $1, 
+                total_time = total_time + $2,
+                correct_words = correct_words + (CASE WHEN $3 = 'completed' THEN 1 ELSE 0 END)
+            WHERE league_id = $4 AND user_id = $5
+        `;
+        await client.query(leaguePlayerUpdateQuery, [scoreEarned, timeTaken, status, league_id, user_id]);
+
+        await client.query('COMMIT');
+        client.release();
+        
+        console.log(`✅ کلمه ${word_number} لیگ ${leagueCode} برای کاربر ${user_id} به وضعیت ${status} رسید. امتیاز: ${scoreEarned}`);
+
+        // بررسی اینکه آیا همه بازیکنان کلمه فعلی را به پایان رسانده‌اند یا خیر
+        const leagueResult = await pool.query('SELECT current_word_number, total_words FROM leagues WHERE code = $1', [leagueCode]);
+        const { current_word_number, total_words } = leagueResult.rows[0];
+        
+        const activePlayersCountResult = await pool.query(`
+            SELECT COUNT(lp.user_id) AS total_players
+            FROM league_players lp
+            WHERE lp.league_id = $1
+        `, [league_id]);
+        
+        const completedPlayersCountResult = await pool.query(`
+            SELECT COUNT(lpp.user_id) AS completed_players
+            FROM league_player_words lpp
+            WHERE lpp.league_id = $1 AND lpp.word_number = $2 AND lpp.status != 'in_progress'
+        `, [league_id, current_word_number]);
+
+        const totalPlayers = parseInt(activePlayersCountResult.rows[0].total_players, 10);
+        const completedPlayers = parseInt(completedPlayersCountResult.rows[0].completed_players, 10);
+        
+        await emitLeagueState(leagueCode); // به‌روزرسانی وضعیت لیگ برای همه
+
+        // اگر همه بازیکنان کلمه فعلی را تمام کرده باشند
+        if (completedPlayers >= totalPlayers) {
+            const nextWordNumber = current_word_number + 1;
+            console.log(`همه بازیکنان کلمه ${current_word_number} را تمام کردند. شروع کلمه بعدی: ${nextWordNumber}`);
+            
+            // شروع کلمه بعدی یا پایان لیگ
+            if (nextWordNumber <= total_words) {
+                // شروع کلمه بعدی با یک تأخیر کوتاه
+                 setTimeout(() => startLeagueWord(leagueCode, nextWordNumber), 5000); // 5 ثانیه تأخیر
+            } else {
+                // پایان لیگ
+                setTimeout(() => endLeague(leagueCode), 5000); // 5 ثانیه تأخیر
+            }
+        }
+        
+    } catch (error) {
+        console.error(`❌ خطای نهایی‌سازی کلمه لیگ برای کاربر ${playerWordDetails.user_id}:`, error);
+        if (client) {
+            await client.query('ROLLBACK');
+            client.release();
+        }
+    }
+}
+
+
+// --- منطق Socket.io ---
+
+let currentUserId = null; // آیدی کاربر فعال که به سوکت وصل است
+
+io.on('connection', (socket) => {
+    console.log(`➕ کاربر جدید متصل شد: ${socket.id}`);
+
+    // --- (۱) احراز هویت کاربر ---
+    socket.on('user_login', async (data) => {
+        let authData;
         try {
-            const result = await pool.query(
-                `SELECT g.code, g.word, g.category, u.name as creator_name 
-                 FROM games g 
-                 JOIN users u ON g.creator_id = u.telegram_id 
-                 WHERE g.status = 'waiting' AND g.creator_id != $1 
-                 ORDER BY g.start_time DESC`,
-                [currentUserId]
+            // FIX START: خطای SyntaxError: "[object Object]" is not valid JSON
+            // این خطا زمانی رخ می‌دهد که یک شیء به جای رشته JSON ارسال شود.
+            // در صورتی که داده رشته باشد، آن را parse می‌کنیم، در غیر این صورت فرض می‌کنیم شیء است.
+            if (typeof data === 'string') {
+                // اگر از Telegram WebApp استفاده شود، معمولاً داده یک رشته است
+                authData = JSON.parse(data);
+            } else if (typeof data === 'object' && data !== null) {
+                // اگر مستقیماً یک شیء از کلاینت ارسال شده باشد (مثل آزمایش با Postman)
+                authData = data;
+            } else {
+                 console.error('❌ خطای احراز هویت: داده ارسالی نامعتبر است. نوع داده غیرمنتظره:', typeof data);
+                 return socket.emit('auth_error', { message: 'داده احراز هویت نامعتبر است.' });
+            }
+            // FIX END
+
+            const { telegram_id, name } = authData;
+
+            if (!telegram_id) {
+                return socket.emit('auth_error', { message: 'شناسه تلگرام (telegram_id) الزامی است.' });
+            }
+
+            // ثبت یا به‌روزرسانی کاربر در دیتابیس
+            await pool.query(
+                `INSERT INTO users (telegram_id, name) VALUES ($1, $2)
+                ON CONFLICT (telegram_id) DO UPDATE SET name = EXCLUDED.name`,
+                [telegram_id, name]
             );
-            socket.emit('waiting_games_list', result.rows);
+
+            currentUserId = telegram_id;
+            socket.join(currentUserId.toString()); // ایجاد یک اتاق بر اساس آیدی کاربر برای پیام‌های خصوصی
+
+            // بازی‌های در حال انجام کاربر (برای اتصال مجدد)
+            const activeGamesResult = await pool.query(`
+                SELECT code, status FROM games 
+                WHERE (creator_id = $1 OR guesser_id = $1) AND status = 'in_progress'
+            `, [currentUserId]);
+
+            // لیگ‌های در حال انجام کاربر (برای اتصال مجدد)
+            const activeLeaguesResult = await pool.query(`
+                SELECT l.code, l.status
+                FROM leagues l
+                JOIN league_players lp ON l.id = lp.league_id
+                WHERE lp.user_id = $1 AND l.status IN ('starting', 'in_progress')
+            `, [currentUserId]);
+
+
+            // کاربر احراز هویت شد
+            socket.emit('auth_success', { 
+                telegram_id: currentUserId, 
+                message: 'احراز هویت با موفقیت انجام شد.',
+                // اتصال مجدد به اتاق‌های فعال
+                rejoin_games: activeGamesResult.rows.map(g => g.code),
+                rejoin_leagues: activeLeaguesResult.rows.map(l => l.code)
+            });
+            console.log(`✅ احراز هویت موفق: ${currentUserId}`);
+            
+            // جوین شدن به اتاق بازی‌ها و لیگ‌های فعال
+            activeGamesResult.rows.forEach(g => socket.join(g.code));
+            activeLeaguesResult.rows.forEach(l => socket.join(l.code));
+
+
         } catch (error) {
-            console.error('❌ خطای دریافت لیست بازی‌های منتظر:', error);
-            socket.emit('game_error', { message: 'خطا در دریافت لیست بازی‌ها.' });
+            console.error('❌ خطای احراز هویت:', error.message);
+            console.error(error.stack);
+            socket.emit('auth_error', { message: 'خطا در پردازش احراز هویت رخ داد.' });
         }
     });
 
-    // --- (۴) جوین شدن به بازی به عنوان حدس زننده ---
+    // --- (۲) ساخت بازی جدید ---
+    socket.on('create_game', async ({ word, category, maxGuesses }) => {
+        if (!currentUserId) return socket.emit('game_error', { message: 'ابتدا باید احراز هویت شوید.' });
+
+        try {
+            const gameCode = generateGameCode();
+            await pool.query(
+                `INSERT INTO games (code, creator_id, word, category, max_guesses, guesses_left, start_time)
+                 VALUES ($1, $2, $3, $4, $5, $5, NOW())`,
+                [gameCode, currentUserId, word, category, maxGuesses]
+            );
+
+            // به اتاق بازی جدید ملحق می‌شود
+            socket.join(gameCode);
+
+            socket.emit('game_created', { code: gameCode, message: `بازی با کد **${gameCode}** ایجاد شد.` });
+            console.log(`🎮 بازی جدید ایجاد شد: ${gameCode} توسط ${currentUserId}`);
+
+            await emitGameState(gameCode);
+
+        } catch (error) {
+            console.error('❌ خطای ایجاد بازی:', error);
+            socket.emit('game_error', { message: 'خطا در ایجاد بازی جدید.' });
+        }
+    });
+
+    // --- (۳) جوین شدن به بازی ---
     socket.on('join_game', async (gameCode) => {
         if (!currentUserId) return socket.emit('game_error', { message: 'ابتدا باید احراز هویت شوید.' });
-        
-        const client = await pool.connect();
+
         try {
+            const client = await pool.connect();
             await client.query('BEGIN');
 
-            const gameResult = await client.query('SELECT creator_id, guesser_id, status FROM games WHERE code = $1 FOR UPDATE', [gameCode]);
-            const game = gameResult.rows[0];
+            const result = await client.query('SELECT * FROM games WHERE code = $1 FOR UPDATE', [gameCode.toUpperCase()]);
+            const game = result.rows[0];
 
             if (!game) {
                 await client.query('ROLLBACK');
@@ -731,230 +873,438 @@ io.on('connection', (socket) => {
                 return socket.emit('game_error', { message: 'بازی مورد نظر یافت نشد.' });
             }
 
-            if (game.creator_id.toString() === currentUserId) {
+            if (game.status !== 'waiting') {
                 await client.query('ROLLBACK');
                 client.release();
-                return socket.emit('game_error', { message: 'شما نمی‌توانید به بازی که خودتان ساخته‌اید بپیوندید.' });
+                return socket.emit('game_error', { message: 'بازی در حال انجام است یا تمام شده.' });
             }
 
-            if (game.status !== 'waiting' && game.guesser_id && game.guesser_id.toString() !== currentUserId) {
+            if (game.creator_id === currentUserId) {
+                // اگر سازنده بخواهد مجدداً جوین شود (قبلاً جوین شده)
+                socket.join(gameCode);
+                await client.query('COMMIT');
+                client.release();
+                await emitGameState(gameCode);
+                return socket.emit('joined_game', { code: gameCode, message: `به عنوان سازنده وارد بازی شدید.` });
+            }
+
+            if (game.guesser_id && game.guesser_id !== currentUserId) {
                 await client.query('ROLLBACK');
                 client.release();
-                return socket.emit('game_error', { message: 'این بازی قبلاً شروع شده یا بازیکن دیگری دارد.' });
+                return socket.emit('game_error', { message: 'شخص دیگری به عنوان حدس زننده وارد شده است.' });
             }
-            
-            // جوین شدن و شروع بازی
+
+            // اگر حدس زننده جدید است
             await client.query(
-                `UPDATE games SET 
-                 guesser_id = $1, 
-                 status = 'in_progress', 
-                 start_time = NOW() 
-                 WHERE code = $2`,
-                [currentUserId, gameCode]
+                'UPDATE games SET guesser_id = $1, status = $2 WHERE code = $3',
+                [currentUserId, 'in_progress', gameCode]
             );
 
             await client.query('COMMIT');
             client.release();
-            
+
             socket.join(gameCode);
+
+            // ارسال پیام به هر دو اتاق
+            io.to(gameCode).emit('game_message', { message: `بازیکن جدید ملحق شد! بازی شروع شد.` });
+            socket.emit('joined_game', { code: gameCode, message: `به بازی ${gameCode} ملحق شدید.` });
+            console.log(`🤝 کاربر ${currentUserId} به بازی ${gameCode} ملحق شد.`);
+
             await emitGameState(gameCode);
 
-            // ارسال پیام به سازنده
-            io.to(game.creator_id.toString()).emit('game_message', { 
-                message: `کاربر **${currentUserData.name}** به بازی شما پیوست. بازی شروع شد!`, 
-                type: 'info' 
-            });
-
-            socket.emit('game_joined', { code: gameCode, message: 'شما به بازی پیوستید. حدس زدن را شروع کنید.' });
         } catch (error) {
-            await client.query('ROLLBACK');
-            client.release();
-            console.error(`❌ خطای جوین شدن به بازی ${gameCode}:`, error);
+            console.error('❌ خطای جوین شدن به بازی:', error);
+            if (client) {
+                await client.query('ROLLBACK');
+                client.release();
+            }
             socket.emit('game_error', { message: 'خطا در پیوستن به بازی.' });
         }
     });
 
-    // --- (۵) ارسال حدس ---
-    socket.on('submit_guess', async ({ gameCode, letter }) => {
+    // --- (۴) حدس زدن کلمه در بازی عادی ---
+    socket.on('guess_word', async ({ gameCode, letter }) => {
         if (!currentUserId) return socket.emit('game_error', { message: 'ابتدا باید احراز هویت شوید.' });
+        
         const normalizedLetter = letter.trim().toLowerCase();
-        if (normalizedLetter.length !== 1 || !/^[ا-ی]$/.test(normalizedLetter)) {
-            return socket.emit('game_error', { message: 'لطفا یک حرف تکی فارسی معتبر وارد کنید.' });
+        if (normalizedLetter.length !== 1) {
+            return socket.emit('game_error', { message: 'فقط یک حرف مجاز است.' });
         }
 
-        const client = await pool.connect();
+        let client;
         try {
+            client = await pool.connect();
             await client.query('BEGIN');
-            
-            const gameResult = await client.query('SELECT * FROM games WHERE code = $1 FOR UPDATE', [gameCode]);
-            const game = gameResult.rows[0];
 
-            if (!game) {
+            const result = await client.query('SELECT * FROM games WHERE code = $1 FOR UPDATE', [gameCode.toUpperCase()]);
+            const game = result.rows[0];
+
+            if (!game || game.status !== 'in_progress' || game.guesser_id !== currentUserId) {
                 await client.query('ROLLBACK');
                 client.release();
-                return socket.emit('game_error', { message: 'بازی مورد نظر یافت نشد.' });
+                return socket.emit('game_error', { message: 'شما مجاز به حدس زدن در این بازی نیستید.' });
             }
             
-            if (game.status !== 'in_progress') {
-                await client.query('ROLLBACK');
-                client.release();
-                return socket.emit('game_error', { message: 'بازی در حال اجرا نیست.' });
-            }
-            
-            if (game.guesser_id.toString() !== currentUserId) {
-                await client.query('ROLLBACK');
-                client.release();
-                return socket.emit('game_error', { message: 'شما حدس‌زننده این بازی نیستید.' });
+            if (game.guesses_left <= 0) {
+                 await client.query('ROLLBACK');
+                 client.release();
+                 return socket.emit('game_error', { message: 'تعداد حدس‌های شما به پایان رسیده است.' });
             }
 
-            // 1. بررسی تکراری بودن حدس
-            if (game.guessed_letters.includes(normalizedLetter)) {
-                await client.query('ROLLBACK');
-                client.release();
-                return socket.emit('game_error', { message: `حرف "${normalizedLetter}" قبلا حدس زده شده است.` });
+            if (game.guessed_letters && game.guessed_letters.includes(normalizedLetter)) {
+                 await client.query('ROLLBACK');
+                 client.release();
+                 return socket.emit('game_message', { message: `حرف **${normalizedLetter}** قبلاً حدس زده شده است.`, type: 'info' });
             }
 
-            // 2. اضافه کردن حرف به لیست حدس‌ها
-            const newGuessedLetters = [...game.guessed_letters, normalizedLetter];
-            
             let isCorrect = false;
-            let newGuessesLeft = game.guesses_left;
-            let newCorrectGuesses = game.correct_guesses;
-            let newIncorrectGuesses = game.incorrect_guesses;
-            let newRevealedLetters = game.revealed_letters;
-
-            // 3. بررسی صحت حدس
-            const wordChars = Array.from(game.word);
-            const foundIndices = [];
+            let indices = [];
+            const wordChars = game.word.split('');
 
             wordChars.forEach((char, index) => {
-                if (char.toLowerCase() === normalizedLetter) {
+                if (char === normalizedLetter) {
                     isCorrect = true;
-                    foundIndices.push(index);
+                    indices.push(index);
                 }
             });
 
+            const newGuessedLetters = game.guessed_letters ? [...game.guessed_letters, normalizedLetter] : [normalizedLetter];
+            let newStatus = 'in_progress';
+            let newGuessesLeft = game.guesses_left;
+            let updateQuery = '';
+            let newCorrectGuesses = game.correct_guesses;
+            let newIncorrectGuesses = game.incorrect_guesses;
+            
             if (isCorrect) {
-                // حدس درست
-                newCorrectGuesses += foundIndices.length;
-                newRevealedLetters[normalizedLetter] = foundIndices;
-                io.to(gameCode).emit('game_message', { message: `حدس درست! حرف **${normalizedLetter}** پیدا شد.`, type: 'success' });
+                newCorrectGuesses += 1;
+                let newRevealedLetters = game.revealed_letters || {};
+                newRevealedLetters[normalizedLetter] = indices;
+                
+                // بررسی برد (اگر همه حروف آشکار شده باشند)
+                const allRevealed = new Set(Object.values(newRevealedLetters).flat());
+                if (allRevealed.size === new Set(wordChars).size) {
+                    newStatus = 'finished';
+                    updateQuery = 'UPDATE games SET guessed_letters = $1, revealed_letters = $2, correct_guesses = $3, status = $4, end_time = NOW(), winner_id = $5 WHERE code = $6';
+                    
+                    // اعمال امتیاز برای برنده
+                    await updateScoreAndEmitLeaderboard(currentUserId, 150);
+                    io.to(gameCode).emit('game_message', { message: `تبریک! بازی را بردید! کلمه: **${game.word}**`, type: 'success' });
+                    console.log(`🎉 کاربر ${currentUserId} بازی ${gameCode} را برد.`);
+                } else {
+                    updateQuery = 'UPDATE games SET guessed_letters = $1, revealed_letters = $2, correct_guesses = $3 WHERE code = $6';
+                    io.to(gameCode).emit('game_message', { message: `حرف **${normalizedLetter}** درست بود!`, type: 'success' });
+                }
+                
+                await client.query(updateQuery, [newGuessedLetters, newRevealedLetters, newCorrectGuesses, newStatus, currentUserId, gameCode].filter(v => v !== undefined));
+
             } else {
-                // حدس غلط
-                newIncorrectGuesses++;
-                newGuessesLeft--;
-                io.to(gameCode).emit('game_message', { message: `حدس غلط! حرف **${normalizedLetter}** در کلمه وجود ندارد.`, type: 'error' });
+                newGuessesLeft -= 1;
+                newIncorrectGuesses += 1;
+                
+                // بررسی باخت (اگر حدس‌ها تمام شده باشد)
+                if (newGuessesLeft <= 0) {
+                    newStatus = 'finished';
+                    updateQuery = 'UPDATE games SET guessed_letters = $1, guesses_left = $2, incorrect_guesses = $3, status = $4, end_time = NOW(), winner_id = $5 WHERE code = $6';
+                    
+                    // اعمال امتیاز برای سازنده (برنده)
+                    await updateScoreAndEmitLeaderboard(game.creator_id, 100);
+                    io.to(gameCode).emit('game_message', { message: `شما باختید. کلمه: **${game.word}**. سازنده برنده شد!`, type: 'error' });
+                    console.log(`😭 کاربر ${currentUserId} بازی ${gameCode} را باخت.`);
+                } else {
+                    updateQuery = 'UPDATE games SET guessed_letters = $1, guesses_left = $2, incorrect_guesses = $3 WHERE code = $6';
+                    io.to(gameCode).emit('game_message', { message: `حرف **${normalizedLetter}** اشتباه بود. ${newGuessesLeft} حدس باقی است.`, type: 'warning' });
+                }
+                
+                 await client.query(updateQuery, [newGuessedLetters, newGuessesLeft, newIncorrectGuesses, newStatus, game.creator_id, gameCode].filter(v => v !== undefined));
             }
 
-            // 4. به‌روزرسانی دیتابیس
-            await client.query(
-                `UPDATE games SET 
-                 guesses_left = $1, 
-                 correct_guesses = $2, 
-                 incorrect_guesses = $3, 
-                 revealed_letters = $4, 
-                 guessed_letters = $5
-                 WHERE code = $6`,
-                [newGuessesLeft, newCorrectGuesses, newIncorrectGuesses, newRevealedLetters, newGuessedLetters, gameCode]
-            );
 
-            // 5. بررسی اتمام بازی
-            let winnerId = null;
-            let points = 0;
-            let gameStatus = game.status;
+            await client.query('COMMIT');
+            client.release();
+            await emitGameState(gameCode);
 
-            if (newCorrectGuesses === game.word.length) {
-                // برنده شدن حدس‌زننده
-                gameStatus = 'finished';
-                winnerId = game.guesser_id;
-                points = 100 + newGuessesLeft * 10; // امتیاز بر اساس حدس‌های باقی مانده
-                io.to(gameCode).emit('game_message', { 
-                    message: `تبریک! شما کلمه **${game.word}** را درست حدس زدید و **${points}** امتیاز گرفتید.`, 
-                    type: 'winner' 
-                });
-                io.to(game.creator_id.toString()).emit('game_message', { 
-                    message: `بازی شما با موفقیت توسط **${currentUserData.name}** به پایان رسید.`, 
-                    type: 'info' 
-                });
-                await updateScoreAndEmitLeaderboard(winnerId, points);
-
-            } else if (newGuessesLeft <= 0) {
-                // باخت حدس‌زننده
-                gameStatus = 'finished';
-                winnerId = game.creator_id; // سازنده برنده می‌شود
-                points = 50; // امتیاز ثابت برای سازنده
-                io.to(gameCode).emit('game_message', { 
-                    message: `متاسفانه حدس‌های شما تمام شد. کلمه پنهان **${game.word}** بود.`, 
-                    type: 'fail' 
-                });
-                io.to(game.creator_id.toString()).emit('game_message', { 
-                    message: `بازی شما به پایان رسید. حدس‌زننده نتوانست کلمه را پیدا کند. شما **${points}** امتیاز گرفتید.`, 
-                    type: 'winner' 
-                });
-                await updateScoreAndEmitLeaderboard(winnerId, points);
+        } catch (error) {
+            console.error(`❌ خطای حدس کلمه در بازی ${gameCode}:`, error);
+            if (client) {
+                await client.query('ROLLBACK');
+                client.release();
             }
+            socket.emit('game_error', { message: 'خطا در پردازش حدس کلمه.' });
+        }
+    });
+    
+    // --- (۵) مدیریت لیگ: جوین شدن/ساخت ---
+    socket.on('join_league', async (leagueCode) => {
+        if (!currentUserId) return socket.emit('game_error', { message: 'ابتدا باید احراز هویت شوید.' });
 
-            if (gameStatus === 'finished') {
-                await client.query(
-                    `UPDATE games SET 
-                     status = $1, 
-                     end_time = NOW(), 
-                     winner_id = $2 
-                     WHERE code = $3`,
-                    [gameStatus, winnerId, gameCode]
-                );
+        let client;
+        try {
+            client = await pool.connect();
+            await client.query('BEGIN');
+            
+            const normalizedCode = leagueCode ? leagueCode.toUpperCase() : null;
+
+            let league;
+            let leagueId;
+            let isCreator = false;
+
+            if (normalizedCode) {
+                // 1. جوین شدن به لیگ موجود (یا ساخت لیگ در صورت نبودن)
+                const result = await client.query('SELECT * FROM leagues WHERE code = $1 FOR UPDATE', [normalizedCode]);
+                league = result.rows[0];
+
+                if (!league) {
+                    // اگر لیگ با کد مشخص شده پیدا نشد، خطا
+                    await client.query('ROLLBACK');
+                    client.release();
+                    return socket.emit('game_error', { message: 'لیگ با این کد یافت نشد.' });
+                }
+                
+                leagueId = league.id;
+            } else {
+                // 2. ساخت یک لیگ جدید در حالت "آماده به پیوستن"
+                let newLeagueCode;
+                let codeExists = true;
+                do {
+                    newLeagueCode = generateGameCode();
+                    const checkResult = await client.query('SELECT code FROM leagues WHERE code = $1', [newLeagueCode]);
+                    if (checkResult.rows.length === 0) {
+                        codeExists = false;
+                    }
+                } while (codeExists);
+
+                const createResult = await client.query(`
+                    INSERT INTO leagues (code, status) VALUES ($1, 'waiting') RETURNING id, code, status
+                `, [newLeagueCode]);
+                league = createResult.rows[0];
+                leagueId = league.id;
+                isCreator = true; // در اینجا، سازنده همان اولین بازیکن است
+            }
+            
+            // بررسی و ثبت بازیکن در league_players
+            const playerCheck = await client.query('SELECT * FROM league_players WHERE league_id = $1 AND user_id = $2', [leagueId, currentUserId]);
+            
+            if (playerCheck.rows.length === 0) {
+                // بازیکن جدید است، اضافه می‌شود
+                await client.query(`
+                    INSERT INTO league_players (league_id, user_id) VALUES ($1, $2)
+                `, [leagueId, currentUserId]);
             }
             
             await client.query('COMMIT');
             client.release();
-
-            // ارسال وضعیت جدید بازی به اتاق
-            await emitGameState(gameCode);
             
-            if (gameStatus === 'finished') {
-                 // کلاینت‌ها را از اتاق خارج کن
-                 io.in(gameCode).socketsLeave(gameCode);
+            // جوین شدن به اتاق سوکت لیگ
+            socket.join(league.code);
+            
+            socket.emit('joined_league', { 
+                code: league.code, 
+                status: league.status, 
+                message: `به لیگ **${league.code}** ملحق شدید.`,
+                isCreator: isCreator 
+            });
+            console.log(`🤝 کاربر ${currentUserId} به لیگ ${league.code} ملحق شد.`);
+
+            await emitLeagueState(league.code);
+            
+            // اگر لیگ همین الان ساخته شد، بلافاصله آن را شروع می‌کنیم (برای سادگی)
+            if (isCreator) {
+                startLeague(league.code);
             }
 
         } catch (error) {
-            await client.query('ROLLBACK');
-            client.release();
-            console.error(`❌ خطای ارسال حدس در بازی ${gameCode}:`, error);
-            socket.emit('game_error', { message: 'خطا در ارسال حدس.' });
+            console.error('❌ خطای جوین شدن/ساخت لیگ:', error);
+            if (client) {
+                await client.query('ROLLBACK');
+                client.release();
+            }
+            socket.emit('game_error', { message: 'خطا در پیوستن یا ایجاد لیگ.' });
         }
     });
 
-    // --- (۶) دریافت لیست بازی‌های ساخته شده توسط کاربر ---
-    socket.on('get_my_created_games', async () => {
-        if (!currentUserId) return;
+    // --- (۶) حدس زدن کلمه در لیگ ---
+    socket.on('guess_league_word', async ({ leagueCode, letter }) => {
+        if (!currentUserId) return socket.emit('game_error', { message: 'ابتدا باید احراز هویت شوید.' });
+        
+        const normalizedLetter = letter.trim().toLowerCase();
+        if (normalizedLetter.length !== 1) {
+            return socket.emit('league_word_guess_result', { isCorrect: false, message: 'فقط یک حرف مجاز است.' });
+        }
+        
+        let client;
         try {
-            const result = await pool.query(
-                `SELECT g.code, g.status, g.word, g.category, u.name as guesser_name
-                 FROM games g
-                 LEFT JOIN users u ON g.guesser_id = u.telegram_id
-                 WHERE g.creator_id = $1
-                 ORDER BY g.start_time DESC`,
-                [currentUserId]
-            );
+            client = await pool.connect();
+            await client.query('BEGIN');
+            
+            // 1. دریافت وضعیت لیگ و کلمه فعال
+            const leagueResult = await client.query('SELECT id, current_word_number, status FROM leagues WHERE code = $1', [leagueCode.toUpperCase()]);
+            const league = leagueResult.rows[0];
+            
+            if (!league || league.status !== 'in_progress') {
+                 await client.query('ROLLBACK');
+                 client.release();
+                 return socket.emit('game_error', { message: 'لیگ در حال انجام نیست.' });
+            }
+            
+            const leagueId = league.id;
+            const wordNumber = league.current_word_number;
+            
+            // 2. دریافت و قفل رکورد وضعیت کلمه بازیکن
+            const playerWordResult = await client.query(`
+                SELECT * FROM league_player_words 
+                WHERE league_id = $1 AND user_id = $2 AND word_number = $3 FOR UPDATE
+            `, [leagueId, currentUserId, wordNumber]);
+            
+            const playerWord = playerWordResult.rows[0];
+            
+            if (!playerWord || playerWord.status !== 'in_progress') {
+                 await client.query('ROLLBACK');
+                 client.release();
+                 return socket.emit('game_error', { message: 'شما این کلمه را قبلاً تمام کرده‌اید یا مجاز به حدس نیستید.' });
+            }
+
+            if (playerWord.guesses_left <= 0) {
+                 await client.query('ROLLBACK');
+                 client.release();
+                 // در لیگ نباید خطا بدهیم، فقط باید وضعیت حدس را بگوییم
+                 return socket.emit('league_word_guess_result', { isCorrect: false, message: 'تعداد حدس‌های شما به پایان رسیده است.', guessesLeft: 0, newStatus: 'failed' });
+            }
+
+            if (playerWord.guessed_letters && playerWord.guessed_letters.includes(normalizedLetter)) {
+                 await client.query('ROLLBACK');
+                 client.release();
+                 return socket.emit('league_word_guess_result', { 
+                     isCorrect: true, // فرض می‌کنیم اگر قبلا حدس زده شده، حداقل یک بار درست بوده
+                     message: `حرف **${normalizedLetter}** قبلاً حدس زده شده است.`, 
+                     guessesLeft: playerWord.guesses_left,
+                     revealedLetters: playerWord.revealed_letters
+                 });
+            }
+            
+            // 3. اعمال منطق حدس
+            let isCorrect = false;
+            let indices = [];
+            const wordChars = playerWord.word.split('');
+
+            wordChars.forEach((char, index) => {
+                if (char === normalizedLetter) {
+                    isCorrect = true;
+                    indices.push(index);
+                }
+            });
+
+            const newGuessedLetters = playerWord.guessed_letters ? [...playerWord.guessed_letters, normalizedLetter] : [normalizedLetter];
+            let newStatus = 'in_progress';
+            let newGuessesLeft = playerWord.guesses_left;
+            let newCorrectGuesses = playerWord.correct_guesses;
+            let newIncorrectGuesses = playerWord.incorrect_guesses;
+            let newRevealedLetters = playerWord.revealed_letters || {};
+            
+            if (isCorrect) {
+                newCorrectGuesses += 1;
+                newRevealedLetters[normalizedLetter] = indices;
+                
+                // بررسی برد (اگر همه حروف آشکار شده باشند)
+                const allRevealed = new Set(Object.values(newRevealedLetters).flat());
+                if (allRevealed.size === new Set(wordChars).size) {
+                    newStatus = 'completed';
+                }
+            } else {
+                newGuessesLeft -= 1;
+                newIncorrectGuesses += 1;
+                
+                // بررسی باخت (اگر حدس‌ها تمام شده باشد)
+                if (newGuessesLeft <= 0) {
+                    newStatus = 'failed';
+                }
+            }
+            
+            // 4. به‌روزرسانی رکورد در دیتابیس
+            await client.query(`
+                UPDATE league_player_words 
+                SET 
+                    guessed_letters = $1, 
+                    revealed_letters = $2, 
+                    correct_guesses = $3, 
+                    incorrect_guesses = $4,
+                    guesses_left = $5, 
+                    status = $6
+                WHERE id = $7
+            `, [
+                newGuessedLetters, 
+                newRevealedLetters, 
+                newCorrectGuesses, 
+                newIncorrectGuesses,
+                newGuessesLeft, 
+                newStatus, 
+                playerWord.id
+            ]);
+
+            await client.query('COMMIT');
+            client.release();
+            
+            // 5. ارسال نتیجه حدس به بازیکن
+            socket.emit('league_word_guess_result', { 
+                isCorrect: isCorrect, 
+                message: isCorrect ? `حرف **${normalizedLetter}** درست بود.` : `حرف **${normalizedLetter}** اشتباه بود.`,
+                guessesLeft: newGuessesLeft,
+                revealedLetters: newRevealedLetters,
+                newStatus: newStatus
+            });
+            
+            // 6. نهایی‌سازی کلمه اگر وضعیت تغییر کرده باشد
+            if (newStatus !== 'in_progress') {
+                const updatedPlayerWord = {
+                    ...playerWord,
+                    status: newStatus,
+                    guesses_left: newGuessesLeft,
+                    // از آبجکت جدید برای محاسبات استفاده می‌کنیم
+                    revealed_letters: newRevealedLetters 
+                };
+                // از start_time اصلی برای محاسبه زمان استفاده می‌کنیم
+                await finalizeLeagueWord(updatedPlayerWord, leagueCode);
+            }
+
+        } catch (error) {
+            console.error(`❌ خطای حدس کلمه در لیگ ${leagueCode}:`, error);
+            if (client) {
+                await client.query('ROLLBACK');
+                client.release();
+            }
+            socket.emit('game_error', { message: 'خطا در پردازش حدس کلمه لیگ.' });
+        }
+    });
+    
+    // --- (۷) درخواست لیست بازی‌های ایجاد شده توسط کاربر ---
+    socket.on('request_my_created_games_list', async () => {
+        if (!currentUserId) return socket.emit('game_error', { message: 'ابتدا باید احراز هویت شوید.' });
+
+        try {
+            const result = await pool.query(`
+                SELECT code, word, category, status, start_time, guesses_left, (SELECT name FROM users WHERE telegram_id = g.guesser_id) as guesser_name
+                FROM games g
+                WHERE creator_id = $1
+                ORDER BY g.start_time DESC
+            `, [currentUserId]);
+
             socket.emit('my_created_games_list', result.rows);
         } catch (error) {
-            console.error('❌ خطای دریافت لیست بازی‌های ساخته شده:', error);
-            socket.emit('game_error', { message: 'خطا در دریافت لیست بازی‌های ساخته شده.' });
+            console.error('❌ خطای دریافت لیست بازی‌های ایجاد شده:', error);
+            socket.emit('game_error', { message: 'خطا در دریافت لیست بازی‌های ایجاد شده.' });
         }
     });
 
-    // --- (۷) دریافت لیست بازی‌هایی که کاربر حدس‌زننده است ---
-    socket.on('get_my_guessing_games', async () => {
-        if (!currentUserId) return;
+    // --- (۸) درخواست لیست بازی‌هایی که کاربر در آن حدس زننده است ---
+    socket.on('request_my_guessing_games_list', async () => {
+        if (!currentUserId) return socket.emit('game_error', { message: 'ابتدا باید احراز هویت شوید.' });
+
         try {
-            const result = await pool.query(
-                `SELECT g.code, g.status, g.word, g.category, u.name as creator_name
-                 FROM games g
-                 JOIN users u ON g.creator_id = u.telegram_id
-                 WHERE g.guesser_id = $1
-                 ORDER BY g.start_time DESC`,
-                [currentUserId]
-            );
+            const result = await pool.query(`
+                SELECT code, word, category, status, start_time, guesses_left, (SELECT name FROM users WHERE telegram_id = g.creator_id) as creator_name
+                FROM games g
+                WHERE guesser_id = $1
+                ORDER BY g.start_time DESC
+            `, [currentUserId]);
 
             socket.emit('my_guessing_games_list', result.rows);
         } catch (error) {
@@ -962,17 +1312,12 @@ io.on('connection', (socket) => {
             socket.emit('game_error', { message: 'خطا در دریافت لیست بازی‌های حدس‌زننده.' });
         }
     });
-
-    // --- (۸) درخواست رتبه‌بندی ---
-    socket.on('request_leaderboard_update', emitLeaderboard);
-
-    // --- (۹) جوین شدن به اتاق بازی برای سازنده (فقط برای اطمینان در مورد بازی های قدیمی) ---
-    // این تابع اکنون با منطق rejoin در user_login همپوشانی دارد.
-    socket.on('join_game_room', async (gameCode) => {
-        socket.join(gameCode);
-        await emitGameState(gameCode);
+    
+    // --- (۹) درخواست به‌روزرسانی جدول رتبه‌بندی جهانی ---
+    socket.on('getLeaderboard', async () => {
+        await emitLeaderboard();
     });
-
+    
     // --- (۱۰) درخواست راهنمایی ---
     socket.on('request_hint', async ({ gameCode, position }) => {
         if (!currentUserId) return socket.emit('game_error', { message: 'ابتدا باید احراز هویت شوید.' });
@@ -982,18 +1327,26 @@ io.on('connection', (socket) => {
         // زیرا تمرکز بر روی منطق لیگ است.
         socket.emit('game_message', { message: 'قابلیت درخواست راهنمایی در حال حاضر فعال نیست.', type: 'error' });
     });
-
-    // --- (۱۱) درخواست وضعیت لیگ ---
+    
+    // --- (۱۱) جوین شدن به اتاق بازی برای سازنده ---
+    // این تابع اکنون با منطق rejoin در user_login همپوشانی دارد.
+    socket.on('join_game_room', async (gameCode) => {
+        socket.join(gameCode);
+        await emitGameState(gameCode);
+    });
+    
+    // --- (۱۲) درخواست وضعیت لیگ (برای تب لیگ) ---
     socket.on('getLeagueStatus', async () => {
-        if (!currentUserId) return socket.emit('league_error', { message: 'ابتدا باید احراز هویت شوید.' });
+        if (!currentUserId) return socket.emit('game_error', { message: 'ابتدا باید احراز هویت شوید.' });
 
         try {
-            // پیدا کردن لیگ فعال کاربر
+            // پیدا کردن لیگ‌های فعال کاربر
             const activeLeaguesResult = await pool.query(`
-                SELECT l.code, l.status, l.current_word_number, l.total_words, lp.score, lp.total_time
+                SELECT l.code, l.status, COUNT(lp.user_id) as player_count
                 FROM leagues l
-                JOIN league_players lp ON l.id = lp.league_id
+                LEFT JOIN league_players lp ON l.id = lp.league_id
                 WHERE lp.user_id = $1 AND l.status IN ('waiting', 'starting', 'in_progress')
+                GROUP BY l.code, l.status
             `, [currentUserId]);
 
             // پیدا کردن لیگ‌های در حال انتظار
@@ -1016,356 +1369,18 @@ io.on('connection', (socket) => {
         }
     });
 
-    // --- (۱۲) جوین شدن به لیگ ---
-    socket.on('joinLeague', async ({ leagueCode }) => {
-        if (!currentUserId) return socket.emit('league_error', { message: 'ابتدا باید احراز هویت شوید.' });
-        
-        const client = await pool.connect();
-        try {
-            await client.query('BEGIN');
-            
-            const leagueResult = await client.query('SELECT id, status, code FROM leagues WHERE code = $1 FOR UPDATE', [leagueCode]);
-            let league = leagueResult.rows[0];
-
-            if (!league) {
-                // اگر لیگی در وضعیت waiting وجود ندارد، یک لیگ جدید بساز
-                let newCode = generateGameCode();
-                let codeExistsResult = await client.query('SELECT 1 FROM leagues WHERE code = $1', [newCode]);
-                while (codeExistsResult.rows.length > 0) {
-                    newCode = generateGameCode();
-                    codeExistsResult = await client.query('SELECT 1 FROM leagues WHERE code = $1', [newCode]);
-                }
-                
-                const newLeagueResult = await client.query(
-                    `INSERT INTO leagues (code, status) VALUES ($1, 'waiting') RETURNING id, status, code`,
-                    [newCode]
-                );
-                league = newLeagueResult.rows[0];
-                leagueCode = newCode;
-                
-                io.emit('leagueMessage', { message: `لیگ جدید با کد ${leagueCode} ایجاد شد.`, type: 'info' });
-            }
-
-            if (league.status !== 'waiting') {
-                await client.query('ROLLBACK');
-                client.release();
-                return socket.emit('league_error', { message: 'این لیگ در حال اجرا است یا پایان یافته.' });
-            }
-
-            // بررسی حضور قبلی
-            const playerCheckResult = await client.query(
-                `SELECT 1 FROM league_players WHERE league_id = $1 AND user_id = $2`, 
-                [league.id, currentUserId]
-            );
-            
-            if (playerCheckResult.rows.length > 0) {
-                await client.query('ROLLBACK');
-                client.release();
-                socket.join(leagueCode); // اگر قبلا جوین شده بود، دوباره جوین به اتاق
-                return socket.emit('league_error', { message: 'شما قبلاً به این لیگ پیوسته‌اید.' });
-            }
-
-            // اضافه کردن بازیکن
-            await client.query(
-                `INSERT INTO league_players (league_id, user_id) VALUES ($1, $2)`,
-                [league.id, currentUserId]
-            );
-
-            // بررسی شروع لیگ (حداقل ۵ بازیکن)
-            const playerCountResult = await client.query(
-                `SELECT COUNT(user_id) as count FROM league_players WHERE league_id = $1`, 
-                [league.id]
-            );
-            const playerCount = parseInt(playerCountResult.rows[0].count, 10);
-            
-            socket.join(leagueCode);
-            io.to(leagueCode).emit('leagueMessage', { message: `کاربر **${currentUserData.name}** به لیگ پیوست. بازیکنان حاضر: ${playerCount}/5`, type: 'info' });
-
-            if (playerCount >= 5) {
-                // شروع لیگ
-                await client.query(`UPDATE leagues SET status = 'starting', start_time = NOW() WHERE id = $1`, [league.id]);
-                
-                // تولید کلمات لیگ
-                const totalWords = 10;
-                for (let i = 1; i <= totalWords; i++) {
-                    const { word, category } = getRandomLeagueWord();
-                    await client.query(
-                        `INSERT INTO league_words (league_id, word_number, word, category, max_guesses)
-                         VALUES ($1, $2, $3, $4, 10)`, 
-                        [league.id, i, word, category]
-                    );
-                }
-                
-                // شروع اولین کلمه
-                await client.query(`UPDATE league_words SET status = 'active' WHERE league_id = $1 AND word_number = 1`, [league.id]);
-                
-                io.to(leagueCode).emit('leagueMessage', { message: `✅ لیگ شروع شد! در حال انتقال به کلمه اول.`, type: 'success' });
-            }
-
-            await client.query('COMMIT');
-            client.release();
-
-            // اگر شروع شد، وضعیت کامل ارسال شود
-            if (playerCount >= 5) {
-                await startNextLeagueWord(leagueCode);
-            }
-            // در غیر این صورت، وضعیت انتظار به‌روز شود
-            await emitLeagueStatus(currentUserId);
-
-
-        } catch (error) {
-            await client.query('ROLLBACK');
-            client.release();
-            console.error(`❌ خطای جوین شدن به لیگ ${leagueCode}:`, error);
-            socket.emit('league_error', { message: 'خطا در پیوستن به لیگ.' });
-        }
-    });
-
-    // --- (۱۳) ارسال حدس در لیگ ---
-    socket.on('submitLeagueGuess', async ({ leagueCode, letter }) => {
-        if (!currentUserId) return socket.emit('league_error', { message: 'ابتدا باید احراز هویت شوید.' });
-        
-        const normalizedLetter = letter.trim().toLowerCase();
-        if (normalizedLetter.length !== 1 || !/^[ا-ی]$/.test(normalizedLetter)) {
-            return socket.emit('league_error', { message: 'لطفا یک حرف تکی فارسی معتبر وارد کنید.' });
-        }
-
-        const client = await pool.connect();
-        try {
-            await client.query('BEGIN');
-            
-            const leagueResult = await client.query('SELECT id, current_word_number, status FROM leagues WHERE code = $1', [leagueCode]);
-            const league = leagueResult.rows[0];
-
-            if (!league || league.status !== 'in_progress') {
-                await client.query('ROLLBACK');
-                client.release();
-                return socket.emit('league_error', { message: 'لیگ در حال اجرا نیست.' });
-            }
-            
-            const currentWordNumber = league.current_word_number;
-
-            const playerWordStatusResult = await client.query(
-                `SELECT lpw.*, lw.word
-                 FROM league_player_words lpw
-                 JOIN league_words lw ON lpw.league_id = lw.league_id AND lpw.word_number = lw.word_number
-                 WHERE lpw.league_id = $1 AND lpw.user_id = $2 AND lpw.word_number = $3 FOR UPDATE`, 
-                [league.id, currentUserId, currentWordNumber]
-            );
-            
-            const playerStatus = playerWordStatusResult.rows[0];
-
-            if (!playerStatus || playerStatus.status !== 'in_progress') {
-                await client.query('ROLLBACK');
-                client.release();
-                return socket.emit('league_error', { message: 'شما قبلاً این کلمه را تکمیل کرده یا حدس‌هایتان تمام شده.' });
-            }
-
-            // 1. بررسی تکراری بودن حدس
-            if (playerStatus.guessed_letters.includes(normalizedLetter)) {
-                await client.query('ROLLBACK');
-                client.release();
-                return socket.emit('league_error', { message: `حرف "${normalizedLetter}" قبلا حدس زده شده است.` });
-            }
-
-            // 2. اضافه کردن حرف به لیست حدس‌ها
-            const newGuessedLetters = [...playerStatus.guessed_letters, normalizedLetter];
-            
-            let isCorrect = false;
-            let newGuessesLeft = playerStatus.guesses_left;
-            let newCorrectGuesses = playerStatus.correct_guesses;
-            let newIncorrectGuesses = playerStatus.incorrect_guesses;
-            let newRevealedLetters = playerStatus.revealed_letters;
-
-            // 3. بررسی صحت حدس
-            const wordChars = Array.from(playerStatus.word);
-            const foundIndices = [];
-
-            wordChars.forEach((char, index) => {
-                if (char.toLowerCase() === normalizedLetter) {
-                    isCorrect = true;
-                    foundIndices.push(index);
-                }
-            });
-
-            if (isCorrect) {
-                // حدس درست
-                newCorrectGuesses += foundIndices.length;
-                newRevealedLetters[normalizedLetter] = foundIndices;
-                io.to(leagueCode).emit('leagueMessage', { message: `🔔 حدس درست از ${currentUserData.name}: حرف **${normalizedLetter}** پیدا شد.`, type: 'success' });
-            } else {
-                // حدس غلط
-                newIncorrectGuesses++;
-                newGuessesLeft--;
-                io.to(leagueCode).emit('leagueMessage', { message: `❌ حدس غلط از ${currentUserData.name}: حرف **${normalizedLetter}** در کلمه وجود ندارد.`, type: 'error' });
-            }
-
-            let newStatus = playerStatus.status;
-            let timeTaken = playerStatus.time_taken;
-            let scoreEarned = 0;
-            let currentLeagueScore = 0;
-            
-            // 4. بررسی اتمام کلمه
-            if (newCorrectGuesses === playerStatus.word.length) {
-                newStatus = 'completed';
-            } else if (newGuessesLeft <= 0) {
-                newStatus = 'failed';
-            }
-            
-            if (newStatus !== playerStatus.status) {
-                // کلمه به پایان رسید
-                const startTime = playerStatus.start_time.getTime();
-                timeTaken = Math.floor((Date.now() - startTime) / 1000);
-                scoreEarned = calculateLeagueScore(newStatus, playerStatus.max_guesses, newGuessesLeft, timeTaken);
-                
-                io.to(leagueCode).emit('leagueMessage', { 
-                    message: `${newStatus === 'completed' ? '⭐' : '💀'} کلمه ${currentWordNumber} برای **${currentUserData.name}** پایان یافت. امتیاز کسب شده: ${scoreEarned}`, 
-                    type: newStatus === 'completed' ? 'winner' : 'fail' 
-                });
-
-                // به‌روزرسانی امتیاز کلی لیگ
-                const updateLeaguePlayerResult = await client.query(
-                    `UPDATE league_players SET 
-                     score = score + $1, 
-                     correct_words = correct_words + CASE WHEN $2 = 'completed' THEN 1 ELSE 0 END,
-                     total_time = total_time + $3
-                     WHERE league_id = $4 AND user_id = $5 
-                     RETURNING score`,
-                    [scoreEarned, newStatus, timeTaken, league.id, currentUserId]
-                );
-                currentLeagueScore = updateLeaguePlayerResult.rows[0].score;
-            }
-
-            // 5. به‌روزرسانی دیتابیس وضعیت کلمه
-            await client.query(
-                `UPDATE league_player_words SET 
-                 guesses_left = $1, 
-                 correct_guesses = $2, 
-                 incorrect_guesses = $3, 
-                 revealed_letters = $4, 
-                 guessed_letters = $5,
-                 status = $6,
-                 end_time = CASE WHEN $6 != 'in_progress' THEN NOW() ELSE end_time END,
-                 time_taken = $7,
-                 score_earned = $8
-                 WHERE league_id = $9 AND user_id = $10 AND word_number = $11`,
-                [newGuessesLeft, newCorrectGuesses, newIncorrectGuesses, newRevealedLetters, newGuessedLetters, newStatus, timeTaken, scoreEarned, league.id, currentUserId, currentWordNumber]
-            );
-
-            await client.query('COMMIT');
-            client.release();
-
-            // 6. بررسی نیاز به رفتن به کلمه بعدی
-            const allPlayersFinishedResult = await pool.query(
-                `SELECT COUNT(*) as unfinished_count 
-                 FROM league_player_words 
-                 WHERE league_id = $1 AND word_number = $2 AND status = 'in_progress'`,
-                [league.id, currentWordNumber]
-            );
-            
-            const unfinishedCount = parseInt(allPlayersFinishedResult.rows[0].unfinished_count, 10);
-            
-            if (unfinishedCount === 0) {
-                // همه بازیکنان این کلمه را تمام کردند
-                if (currentWordNumber < league.total_words) {
-                    await startNextLeagueWord(leagueCode);
-                } else {
-                    // لیگ به پایان رسید
-                    await endLeague(leagueCode);
-                }
-            }
-
-            // 7. ارسال وضعیت به‌روزرسانی شده به اتاق لیگ
-            await emitLeagueState(leagueCode);
-
-        } catch (error) {
-            await client.query('ROLLBACK');
-            client.release();
-            console.error(`❌ خطای ارسال حدس در لیگ ${leagueCode}:`, error);
-            socket.emit('league_error', { message: 'خطا در ارسال حدس در لیگ.' });
-        }
-    });
-
-    // --- (۱۴) درخواست وضعیت کلمه فعلی لیگ (جزئیات بیشتر) ---
-    socket.on('joinLeagueRoom', async (leagueCode) => {
-        if (!currentUserId) return socket.emit('league_error', { message: 'ابتدا باید احراز هویت شوید.' });
-        socket.join(leagueCode);
-        await emitLeagueState(leagueCode);
-    });
-    
-    // --- (۱۵) شروع کلمه بعدی لیگ ---
-    async function startNextLeagueWord(leagueCode) {
-        const client = await pool.connect();
-        try {
-            await client.query('BEGIN');
-            
-            const leagueResult = await client.query('SELECT id, current_word_number, total_words FROM leagues WHERE code = $1 FOR UPDATE', [leagueCode]);
-            const league = leagueResult.rows[0];
-            
-            if (!league) {
-                 await client.query('ROLLBACK');
-                 return;
-            }
-
-            const nextWordNumber = league.current_word_number + 1;
-            
-            if (nextWordNumber > league.total_words) {
-                 // اتمام لیگ (باید در اینجا endLeague صدا زده شود)
-                 await client.query('COMMIT');
-                 client.release();
-                 return endLeague(leagueCode);
-            }
-
-            // 1. به‌روزرسانی لیگ به کلمه بعدی
-            await client.query(`UPDATE leagues SET current_word_number = $1, status = 'in_progress' WHERE id = $2`, [nextWordNumber, league.id]);
-            await client.query(`UPDATE league_words SET status = 'active' WHERE league_id = $1 AND word_number = $2`, [league.id, nextWordNumber]);
-
-            // 2. دریافت کلمه جدید
-            const newWordResult = await client.query('SELECT word, category, max_guesses FROM league_words WHERE league_id = $1 AND word_number = $2', [league.id, nextWordNumber]);
-            const newWord = newWordResult.rows[0];
-
-            // 3. پیدا کردن بازیکنان
-            const playersResult = await client.query('SELECT user_id FROM league_players WHERE league_id = $1', [league.id]);
-            const players = playersResult.rows;
-
-            // 4. درج وضعیت شروع کلمه جدید برای تمام بازیکنان
-            const insertPromises = players.map(p => {
-                return client.query(
-                    `INSERT INTO league_player_words (league_id, user_id, word_number, word, category, max_guesses, guesses_left, start_time, status)
-                     VALUES ($1, $2, $3, $4, $5, $6, $6, NOW(), 'in_progress')`,
-                    [league.id, p.user_id, nextWordNumber, newWord.word, newWord.category, newWord.max_guesses]
-                );
-            });
-            await Promise.all(insertPromises);
-
-            await client.query('COMMIT');
-            client.release();
-            
-            io.to(leagueCode).emit('leagueMessage', { 
-                message: `📢 کلمه ${nextWordNumber} شروع شد! دسته‌بندی: ${newWord.category}`, 
-                type: 'info' 
-            });
-            await emitLeagueState(leagueCode);
-
-
-        } catch (error) {
-            await client.query('ROLLBACK');
-            client.release();
-            console.error(`❌ خطای شروع کلمه بعدی لیگ ${leagueCode}:`, error);
-            io.to(leagueCode).emit('league_error', { message: 'خطا در شروع کلمه بعدی لیگ.' });
-        }
-    }
-
-
     socket.on('disconnect', () => {
         console.log(`➖ کاربر قطع شد: ${socket.id}`);
-        // هیچ logic خاصی برای تمیز کردن وضعیت بازی (به جز خروج از اتاق‌ها) نیاز نیست زیرا وضعیت‌ها در دیتابیس مدیریت می‌شوند
+        // هنگام قطع شدن، currentUserId را ریست نمی‌کنیم چون ممکن است کاربر مجدداً وصل شود
     });
 });
+
 
 // --- راه‌اندازی سرور ---
 setupDatabase().then(() => {
     server.listen(PORT, () => {
-        console.log(`🚀 سرور روی پورت ${PORT} در حال گوش دادن است.`);
+        console.log(`🚀 سرور Socket.io و Express بر روی پورت ${PORT} در حال اجراست.`);
     });
+}).catch(err => {
+    console.error('❌ راه‌اندازی سرور به دلیل خطای دیتابیس با شکست مواجه شد.', err);
 });
