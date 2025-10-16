@@ -305,10 +305,8 @@ async function emitLeagueState(leagueCode) {
 
         const players = playersResult.rows;
 
-        // دریافت کلمه فعلی
-        let currentWord = null;
-        let currentCategory = null;
-        
+        // دریافت وضعیت کلمه فعلی برای هر بازیکن
+        let currentWordState = {};
         if (league.status === 'in_progress') {
             const currentWordResult = await pool.query(`
                 SELECT word, category FROM league_words 
@@ -316,8 +314,22 @@ async function emitLeagueState(leagueCode) {
             `, [league.id, league.current_word_number]);
             
             if (currentWordResult.rows.length > 0) {
-                currentWord = currentWordResult.rows[0].word;
-                currentCategory = currentWordResult.rows[0].category;
+                currentWordState = {
+                    word: currentWordResult.rows[0].word,
+                    category: currentWordResult.rows[0].category
+                };
+            }
+
+            // دریافت وضعیت کلمه برای کاربران متصل
+            for (const player of players) {
+                const playerWordResult = await pool.query(`
+                    SELECT * FROM league_player_words 
+                    WHERE league_id = $1 AND user_id = $2 AND word_number = $3
+                `, [league.id, player.telegram_id, league.current_word_number]);
+                
+                if (playerWordResult.rows.length > 0) {
+                    player.currentWord = playerWordResult.rows[0];
+                }
             }
         }
 
@@ -328,9 +340,10 @@ async function emitLeagueState(leagueCode) {
             currentWordNumber: league.current_word_number,
             totalWords: league.total_words,
             players: players,
-            currentWord: currentWord,
-            currentCategory: currentCategory,
-            playerCount: players.length
+            currentWord: currentWordState.word,
+            currentCategory: currentWordState.category,
+            playerCount: players.length,
+            currentWordState: currentWordState
         };
 
         // ارسال به تمام بازیکنان لیگ
@@ -667,6 +680,110 @@ io.on('connection', (socket) => {
         } catch (error) {
             console.error('❌ خطای پیوستن به بازی:', error);
             socket.emit('game_error', { message: 'خطا در پیوستن به بازی.' });
+        }
+    });
+
+    // --- (۴-الف) پیوستن به بازی تصادفی ---
+    socket.on('join_random_game', async ({ userId }) => {
+        try {
+            // پیدا کردن بازی‌های منتظر که کاربر سازنده آنها نیست
+            const randomGameResult = await pool.query(`
+                SELECT g.code 
+                FROM games g 
+                WHERE g.status = 'waiting' 
+                AND g.creator_id != $1 
+                ORDER BY RANDOM() 
+                LIMIT 1
+            `, [userId]);
+            
+            if (randomGameResult.rows.length === 0) {
+                return socket.emit('game_error', { message: 'هیچ بازی منتظری برای پیوستن وجود ندارد.' });
+            }
+            
+            const gameCode = randomGameResult.rows[0].code;
+            
+            // پیوستن به بازی
+            const gameResult = await pool.query(
+                'SELECT * FROM games WHERE code = $1 AND status = $2', 
+                [gameCode, 'waiting']
+            );
+            const game = gameResult.rows[0];
+
+            if (!game) {
+                return socket.emit('game_error', { message: 'بازی پیدا نشد یا قبلاً شروع شده است.' });
+            }
+
+            // به‌روزرسانی وضعیت به in_progress و ثبت حدس‌زننده
+            await pool.query(
+                'UPDATE games SET guesser_id = $1, status = $2, start_time = NOW() WHERE code = $3',
+                [userId, 'in_progress', gameCode]
+            );
+
+            socket.join(gameCode);
+            socket.emit('game_joined', { code: gameCode });
+            
+            // ارسال وضعیت جدید بازی به هر دو بازیکن (سازنده و حدس‌زننده)
+            await emitGameState(gameCode);
+            
+            console.log(`🔗 کاربر ${userId} به بازی تصادفی ${gameCode} پیوست.`);
+            
+        } catch (error) {
+            console.error('❌ خطای پیوستن به بازی تصادفی:', error);
+            socket.emit('game_error', { message: 'خطا در پیوستن به بازی تصادفی.' });
+        }
+    });
+
+    // --- (۴-ب) دریافت تاریخچه بازی‌های کاربر ---
+    socket.on('get_game_history', async ({ userId }) => {
+        try {
+            const historyResult = await pool.query(`
+                SELECT 
+                    g.code,
+                    g.word,
+                    g.category,
+                    g.status,
+                    g.start_time,
+                    g.end_time,
+                    g.winner_id,
+                    creator.name as creator_name,
+                    guesser.name as guesser_name,
+                    CASE 
+                        WHEN g.creator_id = $1 THEN 'creator'
+                        WHEN g.guesser_id = $1 THEN 'guesser'
+                    END as user_role,
+                    CASE 
+                        WHEN g.winner_id = $1 THEN 'win'
+                        WHEN g.winner_id IS NOT NULL AND g.winner_id != $1 THEN 'loss'
+                        ELSE 'draw'
+                    END as result
+                FROM games g
+                LEFT JOIN users creator ON g.creator_id = creator.telegram_id
+                LEFT JOIN users guesser ON g.guesser_id = guesser.telegram_id
+                WHERE (g.creator_id = $1 OR g.guesser_id = $1)
+                AND g.status = 'finished'
+                ORDER BY g.end_time DESC
+                LIMIT 20
+            `, [userId]);
+            
+            const gameHistory = historyResult.rows.map(game => ({
+                code: game.code,
+                word: game.word,
+                category: game.category,
+                status: game.status,
+                startTime: game.start_time,
+                endTime: game.end_time,
+                creatorName: game.creator_name,
+                guesserName: game.guesser_name,
+                userRole: game.user_role,
+                result: game.result,
+                opponentName: game.user_role === 'creator' ? game.guesser_name : game.creator_name
+            }));
+            
+            socket.emit('game_history', gameHistory);
+            
+        } catch (error) {
+            console.error('❌ خطای دریافت تاریخچه بازی:', error);
+            socket.emit('game_error', { message: 'خطا در دریافت تاریخچه بازی.' });
         }
     });
     
