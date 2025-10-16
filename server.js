@@ -944,7 +944,7 @@ io.on('connection', (socket) => {
                 LEFT JOIN league_players lp ON l.id = lp.league_id
                 WHERE l.status = 'waiting'
                 GROUP BY l.id
-                HAVING COUNT(lp.user_id) < 5
+                HAVING COUNT(lp.user_id) < 2
                 ORDER BY l.created_at ASC
                 LIMIT 1
             `);
@@ -1010,8 +1010,8 @@ io.on('connection', (socket) => {
                 message: `${userName} به لیگ پیوست. (${playerCount}/5)`
             });
 
-            // اگر تعداد بازیکنان به 5 رسید، لیگ را شروع کن
-            if (playerCount >= 5) {
+            // اگر تعداد بازیکنان به2 رسید، لیگ را شروع کن
+            if (playerCount >= 2) {
                 await startLeague(league.code);
             }
 
