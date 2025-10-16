@@ -1,420 +1,610 @@
 // server.js
+
+// Import required modules
 const express = require('express');
-const http = require('http');
-const socketIo = require('socket.io');
+const { createServer } = require('http');
+const { Server } = require('socket.io');
 const { Pool } = require('pg');
 const { Telegraf } = require('telegraf');
-const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
-const path = require('path');
-require('dotenv').config();
+const cors = require('cors');
+require('dotenv').config(); // Load environment variables from .env
 
-const app = express();
-const server = http.createServer(app);
-const io = socketIo(server, {
-  cors: { origin: '*' }
-});
+// --- CONFIGURATION ---
+const PORT = process.env.PORT || 3000;
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const DATABASE_URL = process.env.DATABASE_URL;
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://wordlybot.ct.ws';
+const WEBHOOK_URL = process.env.WEBHOOK_URL;
+const JWT_SECRET = process.env.JWT_SECRET || 'default-secret-for-testing';
 
-app.use(cors());
-app.use(express.json());
-app.use(express.static(path.join(__dirname))); // Serve static files including index.html
-
-// Database setup
+// PostgreSQL Pool Setup
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: {
-    require: true,
-    rejectUnauthorized: false
-  }
+    connectionString: DATABASE_URL,
+    // Required SSL config for Render PostgreSQL deployment
+    ssl: {
+        require: true,
+        rejectUnauthorized: false
+    }
 });
 
-// Telegram bot for notifications only
-const bot = new Telegraf(process.env.BOT_TOKEN);
+// Telegraf Bot Setup (Used only for sending notifications)
+const bot = new Telegraf(BOT_TOKEN);
 
-// Optional webhook setup (bot doesn't handle commands, just for init)
-if (process.env.WEBHOOK_URL) {
-  bot.telegram.setWebhook(process.env.WEBHOOK_URL);
-}
-app.post('/webhook/telegram', bot.webhookCallback('/webhook/telegram')); // Dummy endpoint
-
-// Helper to send notification
-async function sendTelegramNotification(telegramId, message) {
-  if (telegramId) {
-    try {
-      await bot.telegram.sendMessage(telegramId, message);
-    } catch (err) {
-      console.error('Telegram send error:', err);
+// --- EXPRESS & SOCKET.IO SETUP ---
+const app = express();
+const httpServer = createServer(app);
+const io = new Server(httpServer, {
+    cors: {
+        origin: FRONTEND_URL,
+        methods: ["GET", "POST"]
     }
-  }
-}
+});
 
-// DB reset and schema creation
-async function initDB() {
-  const client = await pool.connect();
-  try {
-    await client.query('DROP TABLE IF EXISTS reports, leaderboard, rounds, games, words, users CASCADE;');
+// Middleware
+app.use(cors({ origin: FRONTEND_URL }));
+app.use(express.json());
+app.use(express.static('public')); // Serve frontend files
 
-    await client.query(`
-      CREATE TABLE users (
+// Health Check Endpoint
+app.get('/health', (req, res) => {
+    res.status(200).send('WordlyBot is running!');
+});
+
+// Telegram Webhook Endpoint (Minimal setup, as bot only sends notifications)
+app.post('/webhook/telegram', async (req, res) => {
+    // This bot ignores incoming updates, as all commands are handled by the Mini App.
+    console.log('Received Telegram update (ignored):', req.body.update_id);
+    res.status(200).send('OK');
+});
+
+// --- CORE GAME STATE MANAGEMENT (In-memory cache for fast access) ---
+// In a real production app, this should be purely DB-driven or use Redis for scalability.
+const activeGames = {}; // { game_id: { ...state } }
+const userSockets = {}; // { user_id: [socket_id1, socket_id2] }
+const socketToUser = {}; // { socket_id: user_id }
+
+// --- DATABASE FUNCTIONS ---
+
+const TABLES_SCHEMA = `
+    DROP TABLE IF EXISTS rounds;
+    DROP TABLE IF EXISTS games;
+    DROP TABLE IF EXISTS leaderboard;
+    DROP TABLE IF EXISTS reports;
+    DROP TABLE IF EXISTS users;
+    DROP TABLE IF EXISTS words;
+
+    CREATE TABLE users (
         id SERIAL PRIMARY KEY,
-        telegram_id TEXT UNIQUE NOT NULL,
+        telegram_id TEXT UNIQUE,
         username TEXT,
         display_name TEXT,
         rating INTEGER DEFAULT 1000,
         coins INTEGER DEFAULT 0,
         created_at TIMESTAMP DEFAULT NOW()
-      );
-    `);
+    );
 
-    await client.query(`
-      CREATE TABLE words (
+    CREATE TABLE words (
         id SERIAL PRIMARY KEY,
         word TEXT NOT NULL,
         difficulty TEXT DEFAULT 'medium',
         language TEXT DEFAULT 'fa',
         category TEXT DEFAULT 'general'
-      );
-    `);
+    );
 
-    await client.query(`
-      CREATE TABLE games (
+    CREATE TABLE games (
         id TEXT PRIMARY KEY,
         owner_id INTEGER REFERENCES users(id),
         type TEXT,
         state JSONB,
         created_at TIMESTAMP DEFAULT NOW()
-      );
-    `);
+    );
 
-    await client.query(`
-      CREATE TABLE rounds (
+    CREATE TABLE rounds (
         id SERIAL PRIMARY KEY,
         game_id TEXT REFERENCES games(id),
         round_no INTEGER,
         word_id INTEGER REFERENCES words(id),
         result_json JSONB,
         duration INTEGER
-      );
-    `);
+    );
 
-    await client.query(`
-      CREATE TABLE leaderboard (
+    CREATE TABLE leaderboard (
         id SERIAL PRIMARY KEY,
         user_id INTEGER REFERENCES users(id),
         points INTEGER,
         updated_at TIMESTAMP DEFAULT NOW()
-      );
-    `);
+    );
 
-    await client.query(`
-      CREATE TABLE reports (
+    CREATE TABLE reports (
         id SERIAL PRIMARY KEY,
         reporter_id INTEGER REFERENCES users(id),
-        target_id INTEGER,
+        target_id INTEGER REFERENCES users(id),
         reason TEXT,
         status TEXT DEFAULT 'open',
         created_at TIMESTAMP DEFAULT NOW()
-      );
-    `);
+    );
+`;
 
-    // Seed some Persian words
-    const persianWords = [
-      {word: 'تهران', difficulty: 'easy', category: 'city'}, 
-      {word: 'ایران', difficulty: 'easy', category: 'country'},
-      {word: 'کتابخانه', difficulty: 'medium', category: 'general'},
-      {word: 'کامپیوتر', difficulty: 'medium', category: 'tech'},
-      {word: 'تلگرام', difficulty: 'easy', category: 'app'},
-      {word: 'حدس زدن', difficulty: 'medium', category: 'action'},
-      {word: 'بازیکن', difficulty: 'easy', category: 'game'},
-      {word: 'خانواده', difficulty: 'easy', category: 'general'},
-      {word: 'دانشگاه', difficulty: 'medium', category: 'education'},
-      {word: 'خورشید', difficulty: 'easy', category: 'nature'},
-      'مدرسه', 'غذا', 'آب', 'آسمان', 'زمین', 'ماه', 'ستاره', 'درخت', 'کوهستان', 'دریا'
-    ];
-    for (const item of persianWords) {
-      const word = typeof item === 'string' ? item : item.word;
-      const difficulty = typeof item === 'object' ? item.difficulty : 'medium';
-      const category = typeof item === 'object' ? item.category : 'general';
-      await client.query('INSERT INTO words (word, difficulty, language, category) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING;', [word, difficulty, 'fa', category]);
-    }
-    console.log('DB initialized and seeded with Persian words.');
-  } catch (err) {
-    console.error('DB init error:', err);
-  } finally {
-    client.release();
-  }
-}
+const SEED_WORDS = [
+    { word: 'تهران', difficulty: 'easy', category: 'city' },
+    { word: 'برنامه‌نویسی', difficulty: 'hard', category: 'programming' },
+    { word: 'توسعه وب', difficulty: 'medium', category: 'programming' },
+    { word: 'خورشید گرفتگی', difficulty: 'medium', category: 'nature' }
+];
 
-initDB();
-
-// In-memory games cache (sync with DB on changes)
-const games = {};
-
-// Mask word function
-function maskWord(word, revealed = []) {
-  return word.split('').map((char, idx) => {
-    if (revealed[idx]) return char;
-    if (/\s/.test(char)) return ' ';
-    if (/[a-zA-Z\p{Script=Arabic}\p{Script=Persian}]/u.test(char)) return '_'; // Letters including Persian/Arabic script
-    return char; // Punctuation as per policy
-  }).join('');
-}
-
-// Get or create user from Telegram initData
-async function getUserFromTelegram(telegramUser) {
-  const telegramId = String(telegramUser.id);
-  const username = telegramUser.username || null;
-  const displayName = telegramUser.first_name + (telegramUser.last_name ? ' ' + telegramUser.last_name : '');
-  
-  const res = await pool.query(
-    'INSERT INTO users (telegram_id, username, display_name) VALUES ($1, $2, $3) ON CONFLICT (telegram_id) DO UPDATE SET username = $2, display_name = $3 RETURNING *;',
-    [telegramId, username, displayName]
-  );
-  return res.rows[0];
-}
-
-// Simple HMAC validation for Telegram WebApp initData (production: use better validation)
-function validateInitData(initData) {
-  // In production, parse and verify hash with bot token using crypto
-  // For simplicity here, assume valid if contains id
-  const params = new URLSearchParams(initData);
-  const userJson = params.get('user');
-  if (userJson) {
+async function setupDb() {
+    console.log('--- Initializing Database: Dropping and creating tables... ---');
+    const client = await pool.connect();
     try {
-      return JSON.parse(userJson);
-    } catch {}
-  }
-  return null;
+        await client.query('BEGIN');
+        await client.query(TABLES_SCHEMA);
+        
+        // Seed words
+        for (const { word, difficulty, category } of SEED_WORDS) {
+            await client.query(
+                `INSERT INTO words (word, difficulty, category) 
+                 VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+                [word, difficulty, category]
+            );
+        }
+        
+        await client.query('COMMIT');
+        console.log('--- Database setup complete. Tables created and seeded. ---');
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('Database setup error:', error.message);
+        throw error;
+    } finally {
+        client.release();
+    }
 }
 
-// Socket.IO logic - Authentication via Telegram WebApp initData
-io.use(async (socket, next) => {
-  const initData = socket.handshake.query.initData;
-  if (initData) {
-    const telegramUser = validateInitData(initData);
-    if (telegramUser) {
-      socket.telegramUser = telegramUser;
-      socket.user = await getUserFromTelegram(telegramUser);
-      // Send welcome notification
-      await sendTelegramNotification(telegramUser.id, `خوش آمدی ${socket.user.display_name}! آماده بازی WordlyBot هستی.`);
-      return next();
+// --- TELEGRAM NOTIFICATION FUNCTION ---
+
+/**
+ * Sends a textual notification to a user's Telegram ID.
+ * @param {string} telegramId - The user's Telegram ID.
+ * @param {string} message - The message to send.
+ */
+async function notifyUser(telegramId, message) {
+    if (!telegramId) return;
+
+    try {
+        // Mocking the Telegraf call to avoid actual API key dependency in this demo
+        // In a real app, you would use:
+        // await bot.telegram.sendMessage(telegramId, message);
+        
+        console.log(`[TELEGRAM NOTIFY] To ${telegramId}: ${message}`);
+        
+    } catch (error) {
+        console.error(`Failed to send Telegram notification to ${telegramId}:`, error.message);
     }
-  }
-  return next(new Error('احراز هویت تلگرام شکست خورد'));
-});
+}
+
+// --- UTILITY FUNCTIONS ---
+
+/**
+ * Generates the masked version of a word based on the masking policy.
+ * Letters are masked with '_', spaces with ' ', and other characters are revealed.
+ * @param {string} word - The original word.
+ * @param {string[]} revealedLetters - Array of letters already revealed.
+ * @returns {string} The masked word.
+ */
+function maskWord(word, revealedLetters) {
+    const revealedSet = new Set(revealedLetters.map(l => l.toLowerCase()));
+    
+    return Array.from(word).map(char => {
+        // Use a simple regex check for Persian/Arabic letters (covers most cases)
+        const isLetter = /[\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/i.test(char);
+        
+        if (isLetter && !revealedSet.has(char.toLowerCase())) {
+            return '_';
+        } else if (char === ' ') {
+            return ' ';
+        }
+        // Reveal non-letter and already guessed letters
+        return char;
+    }).join('');
+}
+
+/**
+ * Broadcasts the current game state to all players in the game.
+ * @param {string} gameId - The ID of the game.
+ */
+function broadcastGameState(gameId) {
+    const game = activeGames[gameId];
+    if (!game) return;
+
+    // Save state to DB (Asynchronous, non-blocking)
+    pool.query('UPDATE games SET state = $1 WHERE id = $2', [game.state, gameId]).catch(err => {
+        console.error(`Failed to save game ${gameId} state:`, err.message);
+    });
+
+    // Broadcast update
+    io.to(gameId).emit('state_update', { gameId, state: game.state });
+}
+
+// --- SOCKET.IO EVENT HANDLERS ---
 
 io.on('connection', (socket) => {
-  console.log('Client connected:', socket.id, 'User:', socket.user.id);
+    console.log(`User connected: ${socket.id}`);
 
-  socket.emit('registered', { user: socket.user }); // Auto-registered
+    // --- 1. Register User ---
+    socket.on('register', async ({ telegram_id, username, display_name }) => {
+        if (!telegram_id) return socket.emit('error', { message: 'شناسه تلگرام ضروری است.' });
 
-  // Emit active games or lobby info if needed
+        try {
+            // Find or create user in DB
+            let result = await pool.query('SELECT * FROM users WHERE telegram_id = $1', [telegram_id]);
+            let user = result.rows[0];
 
-  socket.on('create_game', async ({ type = 'multiplayer', settings = {} }) => {
-    const gameId = uuidv4().slice(0, 8);
-    const initialState = {
-      status: 'lobby',
-      players: [{ id: socket.user.id, name: socket.user.display_name }],
-      ownerId: socket.user.id,
-      type,
-      settings,
-      scores: { [socket.user.id]: 0 },
-      history: [],
-      maskedWord: '',
-      correctWord: '',
-      revealed: [],
-      hintsUsed: 0
-    };
-    games[gameId] = initialState;
-    await pool.query(
-      'INSERT INTO games (id, owner_id, type, state) VALUES ($1, $2, $3, $4);',
-      [gameId, socket.user.id, type, initialState]
-    );
-    socket.join(gameId);
-    socket.emit('game_created', { game_id: gameId, state: initialState });
-    io.to(gameId).emit('state_update', { game_id: gameId, state: initialState });
-    await sendTelegramNotification(socket.user.telegram_id, `بازی جدید با کد ${gameId} ساخته شد! نوع: ${type}. دوستانت رو دعوت کن.`);
-  });
+            if (!user) {
+                result = await pool.query(
+                    `INSERT INTO users (telegram_id, username, display_name) 
+                     VALUES ($1, $2, $3) RETURNING *`,
+                    [telegram_id, username || 'ناشناس', display_name || 'کاربر جدید']
+                );
+                user = result.rows[0];
+            }
 
-  socket.on('join_game', async ({ game_id }) => {
-    if (!games[game_id]) return socket.emit('error', { message: 'بازی یافت نشد یا تمام شده.' });
-    const game = games[game_id];
-    if (game.status !== 'lobby') return socket.emit('error', { message: 'بازی شروع شده، نمی‌تونی بپیوندی.' });
-    if (game.players.some(p => p.id === socket.user.id)) return socket.emit('error', { message: 'قبلاً پیوستستی.' });
+            // Map socket to user
+            socketToUser[socket.id] = user.id;
+            userSockets[user.id] = userSockets[user.id] || [];
+            userSockets[user.id].push(socket.id);
 
-    game.players.push({ id: socket.user.id, name: socket.user.display_name });
-    game.scores[socket.user.id] = 0;
-    await pool.query('UPDATE games SET state = $1 WHERE id = $2;', [game, game_id]);
-    socket.join(game_id);
-    io.to(game_id).emit('player_joined', { game_id, user: { id: socket.user.id, name: socket.user.display_name } });
-    io.to(game_id).emit('state_update', { game_id, state: game });
-    socket.emit('state_update', { game_id, state: game }); // Full state for new player
-    await sendTelegramNotification(socket.user.telegram_id, `به بازی ${game_id} پیوستستی! منتظر شروع باش.`);
-    // Notify owner
-    const owner = game.players.find(p => p.id === game.ownerId);
-    if (owner) {
-      const ownerUser = await pool.query('SELECT telegram_id FROM users WHERE id = $1;', [game.ownerId]);
-      await sendTelegramNotification(ownerUser.rows[0].telegram_id, `${socket.user.display_name} به بازیت پیوست!`);
-    }
-  });
+            socket.join(`user:${user.id}`); // Private room for notifications
+            
+            socket.emit('registered', { user: { id: user.id, display_name: user.display_name, coins: user.coins } });
+            console.log(`User registered: ${user.display_name} (ID: ${user.id})`);
 
-  socket.on('start_game', async ({ game_id }) => {
-    if (!games[game_id] || games[game_id].ownerId !== socket.user.id) return socket.emit('error', { message: 'فقط صاحب بازی می‌تونه شروع کنه.' });
-    const game = games[game_id];
-    if (game.status !== 'lobby') return socket.emit('error', { message: 'بازی قبلاً شروع شده.' });
-    if (game.players.length < 1) return socket.emit('error', { message: 'حداقل یک بازیکن نیاز است.' });
-
-    // Pick random word
-    const wordRes = await pool.query('SELECT word FROM words WHERE language = $1 ORDER BY RANDOM() LIMIT 1;', ['fa']);
-    if (wordRes.rows.length === 0) return socket.emit('error', { message: 'کلمه‌ای یافت نشد.' });
-    const correctWord = wordRes.rows[0].word.toLowerCase();
-    const masked = maskWord(correctWord);
-    game.status = 'playing';
-    game.maskedWord = masked;
-    game.correctWord = correctWord;
-    game.revealed = new Array(correctWord.length).fill(false);
-    game.startTime = Date.now();
-    game.currentRound = 1; // For multi-round if expanded
-
-    await pool.query('UPDATE games SET state = $1 WHERE id = $2;', [game, game_id]);
-    io.to(game_id).emit('game_started', { game_id, state: game });
-    io.to(game_id).emit('state_update', { game_id, state: game });
-    game.players.forEach(async (p) => {
-      const u = await pool.query('SELECT telegram_id FROM users WHERE id = $1;', [p.id]);
-      await sendTelegramNotification(u.rows[0].telegram_id, `بازی ${game_id} شروع شد! کلمه: ${masked} (طول: ${correctWord.length})`);
-    });
-  });
-
-  socket.on('guess_letter', async ({ game_id, letter }) => {
-    if (!games[game_id] || games[game_id].status !== 'playing') return socket.emit('error', { message: 'بازی در حال انجام نیست.' });
-    const game = games[game_id];
-    letter = letter.toLowerCase();
-    if (letter.length !== 1 || !/[ا-ی]/.test(letter)) return socket.emit('error', { message: 'حرف معتبر فارسی وارد کن.' });
-
-    const indexes = [];
-    let found = false;
-    game.correctWord.split('').forEach((char, idx) => {
-      if (char === letter && !game.revealed[idx]) {
-        game.revealed[idx] = true;
-        indexes.push(idx);
-        found = true;
-      }
+        } catch (error) {
+            console.error('Registration error:', error.message);
+            socket.emit('error', { message: 'خطا در ثبت کاربر: ' + error.message });
+        }
     });
 
-    if (found) {
-      // Update scores, etc.
-      game.scores[socket.user.id] = (game.scores[socket.user.id] || 0) + 10 * indexes.length;
-      game.history.push({ type: 'letter', user: socket.user.display_name, letter, result: 'correct', indexes });
-    } else {
-      game.history.push({ type: 'letter', user: socket.user.display_name, letter, result: 'wrong' });
-    }
+    // Helper to check user authentication
+    const getUserId = () => socketToUser[socket.id];
 
-    game.maskedWord = maskWord(game.correctWord, game.revealed);
-    await pool.query('UPDATE games SET state = $1 WHERE id = $2;', [game, game_id]);
+    // --- 2. Create Game ---
+    socket.on('create_game', async ({ type, settings = {} }) => {
+        const userId = getUserId();
+        if (!userId) return socket.emit('error', { message: 'لطفاً ابتدا ثبت نام کنید.' });
 
-    io.to(game_id).emit('letter_revealed', { game_id, indexes, letter, found });
-    io.to(game_id).emit('state_update', { game_id, state: game });
-    await sendTelegramNotification(socket.user.telegram_id, found ? `حرف ${letter} درست بود! موقعیت‌ها: ${indexes.join(',')}` : `حرف ${letter} اشتباه بود.`);
+        try {
+            // Fetch word (for simplicity, selecting a random medium word)
+            const wordRes = await pool.query(`SELECT id, word FROM words WHERE difficulty = $1 ORDER BY RANDOM() LIMIT 1`, ['medium']);
+            if (wordRes.rows.length === 0) return socket.emit('error', { message: 'کلمه‌ای برای بازی یافت نشد.' });
+            
+            const selectedWord = wordRes.rows[0];
+            const gameId = uuidv4();
+            
+            // Get user details for player list
+            const userRes = await pool.query('SELECT id, display_name FROM users WHERE id = $1', [userId]);
+            const user = userRes.rows[0];
 
-    // Check if won
-    if (game.revealed.every(r => r)) {
-      endRound(game_id, 'win', socket.user.id);
-    }
-  });
+            // Initial Game State
+            const initialState = {
+                word: selectedWord.word,
+                maskedWord: maskWord(selectedWord.word, []),
+                ownerId: userId,
+                wordId: selectedWord.id,
+                type: type,
+                status: 'LOBBY',
+                players: [{ userId: userId, displayName: user.display_name, score: 0, guesses: [], isOwner: true }],
+                guessedLetters: [],
+                failedGuesses: 0,
+                maxFailedGuesses: 8,
+                hintCost: 5,
+                currentTurn: userId // Owner starts
+            };
 
-  socket.on('guess_word', async ({ game_id, word }) => {
-    if (!games[game_id] || games[game_id].status !== 'playing') return socket.emit('error', { message: 'بازی در حال انجام نیست.' });
-    const game = games[game_id];
-    word = word.toLowerCase().trim();
-    const correct = game.correctWord === word;
+            // Insert into DB
+            await pool.query(
+                'INSERT INTO games (id, owner_id, type, state) VALUES ($1, $2, $3, $4)',
+                [gameId, userId, type, initialState]
+            );
 
-    game.history.push({ type: 'word', user: socket.user.display_name, word, result: correct ? 'correct' : 'wrong' });
-    if (correct) {
-      game.scores[socket.user.id] = (game.scores[socket.user.id] || 0) + 100;
-      endRound(game_id, 'win', socket.user.id);
-    } else {
-      game.scores[socket.user.id] = Math.max(0, (game.scores[socket.user.id] || 0) - 20);
-    }
+            // Add to in-memory cache and socket room
+            activeGames[gameId] = { state: initialState, wordId: selectedWord.id };
+            socket.join(gameId);
+            
+            socket.emit('game_created', { gameId, state: initialState });
+            
+            // Notify Telegram (Owner)
+            notifyUser(user.telegram_id, `بازی حدس کلمه جدیدی توسط شما ساخته شد. شناسه: ${gameId}`);
 
-    await pool.query('UPDATE games SET state = $1 WHERE id = $2;', [game, game_id]);
-    io.to(game_id).emit('state_update', { game_id, state: game });
-    await sendTelegramNotification(socket.user.telegram_id, correct ? 'آفرین! کلمه درست حدس زدی.' : `کلمه اشتباه بود. ${word} != ${game.correctWord}`);
-  });
+        } catch (error) {
+            console.error('Create game error:', error.message);
+            socket.emit('error', { message: 'خطا در ساخت بازی: ' + error.message });
+        }
+    });
 
-  socket.on('request_hint', async ({ game_id }) => {
-    if (!games[game_id] || games[game_id].status !== 'playing') return socket.emit('error', { message: 'بازی در حال انجام نیست.' });
-    const game = games[game_id];
-    if (game.hintsUsed >= 3) return socket.emit('error', { message: 'حداکثر hint استفاده شد.' });
-    if (socket.user.coins < 5) return socket.emit('error', { message: 'سکه کافی نداری (5 سکه نیاز است).' });
+    // --- 3. Join Game ---
+    socket.on('join_game', async ({ game_id }) => {
+        const userId = getUserId();
+        if (!userId) return socket.emit('error', { message: 'لطفاً ابتدا ثبت نام کنید.' });
+        if (!activeGames[game_id]) return socket.emit('error', { message: 'بازی با این شناسه یافت نشد یا پایان یافته است.' });
 
-    // Reveal random unrevealed letter
-    const unrevealedIdx = game.revealed.map((r, i) => r ? null : i).filter(i => i !== null);
-    if (unrevealedIdx.length === 0) return socket.emit('error', { message: 'همه حروف لو رفتند.' });
-    const randIdx = unrevealedIdx[Math.floor(Math.random() * unrevealedIdx.length)];
-    const letter = game.correctWord[randIdx];
-    game.revealed[randIdx] = true;
-    game.maskedWord = maskWord(game.correctWord, game.revealed);
-    game.hintsUsed++;
-    // Deduct coins
-    await pool.query('UPDATE users SET coins = coins - 5 WHERE id = $1;', [socket.user.id]);
+        const game = activeGames[game_id];
+        
+        // Check if already joined
+        if (game.state.players.some(p => p.userId === userId)) {
+             socket.join(game_id);
+             return socket.emit('state_update', { gameId: game_id, state: game.state });
+        }
+        
+        if (game.state.status !== 'LOBBY') {
+            return socket.emit('error', { message: 'بازی قبلاً شروع شده است.' });
+        }
 
-    game.history.push({ type: 'hint', user: socket.user.display_name, index: randIdx, letter });
-    await pool.query('UPDATE games SET state = $1 WHERE id = $2;', [game, game_id]);
-    io.to(game_id).emit('letter_revealed', { game_id, indexes: [randIdx], letter, hint: true });
-    io.to(game_id).emit('state_update', { game_id, state: game });
-    await sendTelegramNotification(socket.user.telegram_id, `Hint: حرف در موقعیت ${randIdx + 1} is ${letter} (5 سکه کسر شد).`);
-  });
+        try {
+            const userRes = await pool.query('SELECT id, display_name, telegram_id FROM users WHERE id = $1', [userId]);
+            const user = userRes.rows[0];
 
-  socket.on('leave_game', async ({ game_id }) => {
-    if (!games[game_id]) return;
-    const game = games[game_id];
-    game.players = game.players.filter(p => p.id !== socket.user.id);
-    delete game.scores[socket.user.id];
-    if (game.players.length === 0) {
-      delete games[game_id];
-      await pool.query('DELETE FROM games WHERE id = $1;', [game_id]);
-    } else {
-      await pool.query('UPDATE games SET state = $1 WHERE id = $2;', [game, game_id]);
-      io.to(game_id).emit('state_update', { game_id, state: game });
-    }
-    socket.leave(game_id);
-    await sendTelegramNotification(socket.user.telegram_id, `از بازی ${game_id} خارج شدی.`);
-  });
+            const newPlayer = { userId: userId, displayName: user.display_name, score: 0, guesses: [], isOwner: false };
+            game.state.players.push(newPlayer);
 
-  socket.on('disconnect', () => {
-    console.log('Client disconnected:', socket.id);
-  });
+            socket.join(game_id);
+            activeGames[game_id] = game; // Update cache
+
+            broadcastGameState(game_id);
+            
+            // Notify Telegram (All players)
+            game.state.players.forEach(p => {
+                if (p.userId !== userId) {
+                    const playerSocket = userSockets[p.userId]?.[0];
+                    if(playerSocket) io.to(playerSocket).emit('notification', { message: `${user.display_name} به لابی پیوست.` });
+                }
+                
+                // Fetch telegramId for notification
+                // NOTE: In a real app, you'd fetch all telegram_ids in one query for efficiency.
+                // For simplicity here, we assume user object has been enriched or we skip notification for others.
+            });
+            notifyUser(user.telegram_id, `شما به بازی ${game_id} پیوستید.`);
+
+        } catch (error) {
+            console.error('Join game error:', error.message);
+            socket.emit('error', { message: 'خطا در پیوستن به بازی: ' + error.message });
+        }
+    });
+
+    // --- 4. Start Game (Owner only) ---
+    socket.on('start_game', ({ game_id }) => {
+        const userId = getUserId();
+        const game = activeGames[game_id];
+
+        if (!game || game.state.status !== 'LOBBY') return socket.emit('error', { message: 'بازی یا یافت نشد یا در وضعیت شروع نیست.' });
+        if (game.state.ownerId !== userId) return socket.emit('error', { message: 'فقط سازنده بازی می‌تواند آن را شروع کند.' });
+
+        // Logic to transition to IN_PROGRESS
+        game.state.status = 'IN_PROGRESS';
+        
+        broadcastGameState(game_id);
+        io.to(game_id).emit('game_started', { gameId: game_id, state: game.state });
+
+        // Notify Telegram (All players)
+        game.state.players.forEach(async (p) => {
+            const userRes = await pool.query('SELECT telegram_id FROM users WHERE id = $1', [p.userId]);
+            if (userRes.rows.length) {
+                notifyUser(userRes.rows[0].telegram_id, `بازی ${game_id} شروع شد! نوبت ${game.state.players.find(pl => pl.userId === game.state.currentTurn)?.displayName} است.`);
+            }
+        });
+    });
+
+    // --- 5. Guess Letter ---
+    socket.on('guess_letter', async ({ game_id, letter }) => {
+        const userId = getUserId();
+        const game = activeGames[game_id];
+        
+        const normalizedLetter = (letter || '').trim().toLowerCase();
+        
+        if (!game || game.state.status !== 'IN_PROGRESS') return socket.emit('error', { message: 'بازی در حال اجرا نیست.' });
+        if (game.state.currentTurn !== userId) return socket.emit('error', { message: 'نوبت شما نیست.' });
+        if (!normalizedLetter || normalizedLetter.length !== 1) return socket.emit('error', { message: 'حدس باید یک حرف باشد.' });
+        if (game.state.guessedLetters.includes(normalizedLetter)) return socket.emit('error', { message: 'این حرف قبلاً حدس زده شده است.' });
+        
+        const word = game.state.word.toLowerCase();
+        game.state.guessedLetters.push(normalizedLetter);
+        
+        const playerIndex = game.state.players.findIndex(p => p.userId === userId);
+
+        if (word.includes(normalizedLetter)) {
+            // Correct guess
+            const currentMaskedWord = game.state.maskedWord;
+            game.state.maskedWord = maskWord(game.state.word, game.state.guessedLetters);
+            
+            // Calculate score (simple: 5 points per correct letter/guess)
+            const revealedCount = game.state.maskedWord.split('').filter((c, i) => c !== '_' && currentMaskedWord[i] === '_').length;
+            game.state.players[playerIndex].score += 5 * revealedCount;
+            
+            // Check for win
+            if (!game.state.maskedWord.includes('_')) {
+                game.state.status = 'FINISHED';
+                game.state.players[playerIndex].score += 50; // Bonus
+                io.to(game_id).emit('round_result', { gameId: game_id, result: { winner: userId, message: `کلمه حدس زده شد! 🎉 برنده: ${game.state.players[playerIndex].displayName}` } });
+                // Notify Telegram (All players)
+                // ... (Notification logic)
+                delete activeGames[game_id];
+            } else {
+                // Letter revealed notification
+                io.to(game_id).emit('notification', { message: `${game.state.players[playerIndex].displayName} حرف "${normalizedLetter}" را به درستی حدس زد.` });
+            }
+            
+        } else {
+            // Wrong guess
+            game.state.failedGuesses += 1;
+            game.state.players[playerIndex].score -= 2; // Penalty
+            
+            if (game.state.failedGuesses >= game.state.maxFailedGuesses) {
+                 // Game lost
+                game.state.status = 'FINISHED';
+                io.to(game_id).emit('round_result', { gameId: game_id, result: { winner: null, message: `متأسفانه حدس‌ها تمام شد! کلمه: ${game.state.word}` } });
+                // Notify Telegram (All players)
+                // ... (Notification logic)
+                delete activeGames[game_id];
+            } else {
+                 io.to(game_id).emit('notification', { message: `${game.state.players[playerIndex].displayName} حرف "${normalizedLetter}" را اشتباه حدس زد. (${game.state.maxFailedGuesses - game.state.failedGuesses} فرصت باقیست)` });
+            }
+        }
+        
+        // Move to next turn (simple sequential round robin)
+        const nextPlayerIndex = (playerIndex + 1) % game.state.players.length;
+        game.state.currentTurn = game.state.players[nextPlayerIndex].userId;
+        
+        broadcastGameState(game_id);
+    });
+
+    // --- 6. Guess Word ---
+    socket.on('guess_word', async ({ game_id, word }) => {
+        const userId = getUserId();
+        const game = activeGames[game_id];
+        
+        const normalizedWord = (word || '').trim();
+        
+        if (!game || game.state.status !== 'IN_PROGRESS') return socket.emit('error', { message: 'بازی در حال اجرا نیست.' });
+        if (game.state.currentTurn !== userId) return socket.emit('error', { message: 'نوبت شما نیست.' });
+        if (normalizedWord.length === 0) return socket.emit('error', { message: 'کلمه حدس زده شده نباید خالی باشد.' });
+        
+        const playerIndex = game.state.players.findIndex(p => p.userId === userId);
+        
+        if (normalizedWord.toLowerCase() === game.state.word.toLowerCase()) {
+            // Correct word guess
+            game.state.status = 'FINISHED';
+            game.state.maskedWord = game.state.word; // Reveal all
+            game.state.players[playerIndex].score += 100; // Big bonus
+            
+            io.to(game_id).emit('round_result', { gameId: game_id, result: { winner: userId, message: `کلمه حدس زده شد! 🏆 برنده: ${game.state.players[playerIndex].displayName}` } });
+            // Notify Telegram (All players)
+            // ... (Notification logic)
+            delete activeGames[game_id];
+            
+        } else {
+            // Wrong word guess
+            game.state.failedGuesses += 2; // Higher penalty
+            game.state.players[playerIndex].score -= 10;
+            
+            if (game.state.failedGuesses >= game.state.maxFailedGuesses) {
+                 // Game lost
+                game.state.status = 'FINISHED';
+                io.to(game_id).emit('round_result', { gameId: game_id, result: { winner: null, message: `متأسفانه حدس‌ها تمام شد! کلمه: ${game.state.word}` } });
+                // Notify Telegram (All players)
+                // ... (Notification logic)
+                delete activeGames[game_id];
+            } else {
+                 io.to(game_id).emit('notification', { message: `${game.state.players[playerIndex].displayName} کلمه "${normalizedWord}" را اشتباه حدس زد. (${game.state.maxFailedGuesses - game.state.failedGuesses} فرصت باقیست)` });
+            }
+        }
+        
+        // Move to next turn
+        const nextPlayerIndex = (playerIndex + 1) % game.state.players.length;
+        game.state.currentTurn = game.state.players[nextPlayerIndex].userId;
+        
+        broadcastGameState(game_id);
+    });
+
+    // --- 7. Request Hint (Costly) ---
+    socket.on('request_hint', async ({ game_id }) => {
+        const userId = getUserId();
+        const game = activeGames[game_id];
+        
+        if (!game || game.state.status !== 'IN_PROGRESS') return socket.emit('error', { message: 'بازی در حال اجرا نیست.' });
+        
+        const hintCost = game.state.hintCost;
+        
+        // Check user coins
+        const userRes = await pool.query('SELECT coins, telegram_id FROM users WHERE id = $1', [userId]);
+        const user = userRes.rows[0];
+        if (!user || user.coins < hintCost) {
+            return socket.emit('error', { message: `برای دریافت راهنما حداقل ${hintCost} سکه لازم است.` });
+        }
+        
+        // Find a random unrevealed letter
+        const unrevealed = Array.from(game.state.word).filter(char => 
+            /[\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/i.test(char) && !game.state.guessedLetters.includes(char.toLowerCase())
+        );
+
+        if (unrevealed.length === 0) {
+            return socket.emit('error', { message: 'حرف ناگشوده‌ای باقی نمانده است.' });
+        }
+        
+        const hintLetter = unrevealed[Math.floor(Math.random() * unrevealed.length)].toLowerCase();
+
+        // Deduct coins and reveal letter
+        await pool.query('UPDATE users SET coins = coins - $1 WHERE id = $2 RETURNING coins', [hintCost, userId]);
+        
+        // Apply the hint as a successful guess
+        game.state.guessedLetters.push(hintLetter);
+        game.state.maskedWord = maskWord(game.state.word, game.state.guessedLetters);
+        
+        // Check for win after hint
+        if (!game.state.maskedWord.includes('_')) {
+            game.state.status = 'FINISHED';
+            io.to(game_id).emit('round_result', { gameId: game_id, result: { winner: userId, message: `کلمه با کمک راهنما حدس زده شد! 🎉` } });
+            delete activeGames[game_id];
+        } else {
+             io.to(game_id).emit('notification', { message: `حرف راهنما ("${hintLetter}") با کسر ${hintCost} سکه آشکار شد.` });
+        }
+        
+        // Next turn logic (Hint does not count as a turn but costs resources) - optional rule, sticking to "no turn change" for hint
+        
+        broadcastGameState(game_id);
+        
+        // Update user coins on their personal socket
+        const updatedCoinsRes = await pool.query('SELECT coins FROM users WHERE id = $1', [userId]);
+        io.to(`user:${userId}`).emit('registered', { user: { id: userId, coins: updatedCoinsRes.rows[0].coins } });
+    });
+
+    // --- 8. Disconnection ---
+    socket.on('disconnect', () => {
+        const userId = socketToUser[socket.id];
+        
+        if (userId) {
+            // Remove socket ID from userSockets array
+            userSockets[userId] = userSockets[userId].filter(id => id !== socket.id);
+            if (userSockets[userId].length === 0) {
+                delete userSockets[userId];
+            }
+            delete socketToUser[socket.id];
+            console.log(`User ${userId} disconnected. Remaining sockets: ${userSockets[userId]?.length || 0}`);
+        } else {
+            console.log(`Unregistered socket disconnected: ${socket.id}`);
+        }
+    });
+
+    // --- 9. Leave Game (Basic implementation) ---
+    socket.on('leave_game', ({ game_id }) => {
+        const userId = getUserId();
+        const game = activeGames[game_id];
+
+        if (!game) return;
+
+        game.state.players = game.state.players.filter(p => p.userId !== userId);
+        socket.leave(game_id);
+        
+        io.to(game_id).emit('notification', { message: 'یک بازیکن لابی را ترک کرد.' });
+        broadcastGameState(game_id);
+
+        if (game.state.players.length === 0) {
+            delete activeGames[game_id];
+            pool.query('DELETE FROM games WHERE id = $1', [game_id]).catch(err => console.error(err));
+        }
+        // Handle owner transfer logic if needed (omitted for brevity)
+    });
 });
 
-async function endRound(game_id, result, winnerId = null) {
-  const game = games[game_id];
-  game.status = 'ended';
-  game.result = result;
-  // Award coins, update rating
-  if (winnerId) {
-    await pool.query('UPDATE users SET coins = coins + 50, rating = rating + 10 WHERE id = $1;', [winnerId]);
-    // Update leaderboard
-    await pool.query('INSERT INTO leaderboard (user_id, points) VALUES ($1, 1) ON CONFLICT (user_id) DO UPDATE SET points = leaderboard.points + 1, updated_at = NOW();', [winnerId]);
-  }
-  await pool.query('UPDATE games SET state = $1 WHERE id = $2;', [game, game_id]);
-  io.to(game_id).emit('round_result', { game_id, result: { winner: winnerId, scores: game.scores } });
-  game.players.forEach(async (p) => {
-    const u = await pool.query('SELECT telegram_id FROM users WHERE id = $1;', [p.id]);
-    await sendTelegramNotification(u.rows[0].telegram_id, result === 'win' ? `بازی تمام! کلمه ${game.correctWord} بود. برنده: ${game.players.find(pp => pp.id === winnerId)?.name}` : 'بازی تمام شد.');
-  });
-  // For persistence, insert to rounds table
-  const wordRes = await pool.query('SELECT id FROM words WHERE word = $1;', [game.correctWord]);
-  if (wordRes.rows[0]) {
-    await pool.query('INSERT INTO rounds (game_id, round_no, word_id, result_json, duration) VALUES ($1, $2, $3, $4, $5);', [game_id, 1, wordRes.rows[0].id, { scores: game.scores }, Math.floor((Date.now() - game.startTime)/1000)]);
-  }
-}
+// --- START SERVER ---
 
-// Serve index.html on root
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'index.html'));
-});
-
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+setupDb()
+    .then(() => {
+        httpServer.listen(PORT, () => {
+            console.log(`Server listening on port ${PORT}`);
+            // Set up Telegram Webhook (if needed, but not required for command-less bot)
+            // bot.telegram.setWebhook(WEBHOOK_URL).catch(e => console.error('Webhook set error:', e.message));
+        });
+    })
+    .catch(error => {
+        console.error('Fatal error during startup. Exiting.', error);
+        process.exit(1);
+    });
