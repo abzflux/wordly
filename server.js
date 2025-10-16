@@ -26,7 +26,7 @@ const pool = new Pool({
 });
 
 // تلگرام بات
-const bot = new Telegraf(process.env.BOT_TOKEN);
+const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
 
 // میدلورها
 app.use(express.json());
