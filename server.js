@@ -94,7 +94,7 @@ app.post(`/${token}`, (req, res) => {
 
 // ست کردن webhook (وقتی سرور بالا می‌آد)
 app.listen(process.env.PORT || 3000, () => {
-  const webhookUrl = `https://your-app-name.onrender.com/${token}`;  // جایگزین با URL واقعی Render
+  const webhookUrl = `https://wordlybot.onrender.com/${token}`;  // جایگزین با URL واقعی Render
   bot.setWebHook(webhookUrl).then(() => {
     console.log(`Webhook set to ${webhookUrl}`);
   }).catch(err => console.error('Webhook Error:', err));
