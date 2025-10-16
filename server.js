@@ -1,1069 +1,1105 @@
-// --- تنظیمات و متغیرهای سرور ---
-const SERVER_URL = 'https://wordlybot.ct.ws';
-let socket = null;
-let currentUser = null;
-let currentGame = null;
-let currentLeague = null;
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const { Pool } = require('pg');
+const cors = require('cors');
 
-// --- راه‌اندازی Telegram Web App ---
-let tg = null;
-try {
-    tg = window.Telegram.WebApp;
-    tg.expand();
-    tg.enableClosingConfirmation();
-} catch (error) {
-    console.warn('Telegram Web App API در دسترس نیست. حالت توسعه فعال شد.');
-}
+// --- Telegram Bot Library ---
+const TelegramBot = require('node-telegram-bot-api');
 
-// --- راه‌اندازی Socket.io ---
-function initializeSocket() {
-    socket = io(SERVER_URL, {
-        transports: ['websocket', 'polling']
-    });
+// --- تنظیمات و متغیرهای محیطی ---
+const BOT_TOKEN = '8408419647:AAGuoIwzH-_S0jXWshGs-jz4CCTJgc_tfdQ';
+const DATABASE_URL = 'postgresql://abzx:RsDq7AmdXXj9WOnACP0RTxonFuKIaJki@dpg-d3oj7rmuk2gs73cscc6g-a.frankfurt-postgres.render.com/wordlydb_7vux';
+const FRONTEND_URL = 'https://wordlybot.ct.ws';
+const PORT = process.env.PORT || 3000;
 
-    socket.on('connect', () => {
-        console.log('✅ متصل به سرور شد.');
-        showScreen('mainMenu');
-    });
-
-    socket.on('disconnect', () => {
-        console.log('❌ اتصال به سرور قطع شد.');
-        showNotification('اتصال به سرور قطع شد. در حال تلاش برای اتصال مجدد...', 'error');
-    });
-
-    socket.on('connect_error', (error) => {
-        console.error('❌ خطای اتصال:', error);
-        showNotification('خطا در اتصال به سرور', 'error');
-    });
-
-    // --- مدیریت رویدادهای بازی ---
-    socket.on('game_created', (data) => {
-        showNotification(`بازی با کد ${data.code} ایجاد شد!`, 'success');
-        currentGame = { code: data.code, role: 'creator' };
-        showScreen('gameLobby');
-    });
-
-    socket.on('game_joined', (data) => {
-        showNotification(`به بازی ${data.code} پیوستید!`, 'success');
-        currentGame = { code: data.code, role: 'guesser' };
-        showScreen('gameLobby');
-    });
-
-    socket.on('game_update', (gameState) => {
-        updateGameDisplay(gameState);
-    });
-
-    socket.on('game_finished', (data) => {
-        showNotification(`بازی پایان یافت! برنده: ${data.winnerName} - امتیاز: ${data.points}`, 'success');
-        currentGame = null;
-        setTimeout(() => showScreen('mainMenu'), 3000);
-    });
-
-    socket.on('game_error', (data) => {
-        showNotification(data.message, 'error');
-    });
-
-    socket.on('message', (data) => {
-        showGameMessage(data.text, data.type);
-    });
-
-    socket.on('waiting_games_list', (games) => {
-        displayWaitingGames(games);
-    });
-
-    // --- مدیریت رویدادهای لیگ ---
-    socket.on('league_created', (data) => {
-        showNotification(`لیگ با کد ${data.code} ایجاد شد!`, 'success');
-        currentLeague = { code: data.code };
-        showScreen('leagueLobby');
-    });
-
-    socket.on('league_joined', (data) => {
-        showNotification(`به لیگ ${data.code} پیوستید!`, 'success');
-        currentLeague = { code: data.code };
-        showScreen('leagueLobby');
-    });
-
-    socket.on('leagueStatus', (leagueState) => {
-        updateLeagueDisplay(leagueState);
-    });
-
-    socket.on('leagueStarted', (data) => {
-        showNotification('لیگ شروع شد! آماده باشید...', 'success');
-    });
-
-    socket.on('leagueWordStarted', (data) => {
-        showNotification(`کلمه ${data.currentWordNumber} از ${data.totalWords} شروع شد!`, 'info');
-    });
-
-    socket.on('leagueEnded', (data) => {
-        showNotification(`لیگ به پایان رسید! برنده: ${data.winner?.name || 'نامشخص'}`, 'success');
-        currentLeague = null;
-        setTimeout(() => showScreen('mainMenu'), 5000);
-    });
-
-    socket.on('league_message', (data) => {
-        showGameMessage(data.text, data.type);
-    });
-
-    socket.on('league_error', (data) => {
-        showNotification(data.message, 'error');
-    });
-
-    // --- مدیریت رویدادهای کاربر ---
-    socket.on('login_success', (data) => {
-        currentUser = data;
-        showNotification(`خوش آمدید ${data.name}!`, 'success');
-        showScreen('mainMenu');
-    });
-
-    socket.on('login_error', (data) => {
-        showNotification(data.message, 'error');
-    });
-
-    socket.on('leaderboard_update', (data) => {
-        updateLeaderboard(data);
-    });
-}
-
-// --- توابع کمکی نمایش ---
-function showScreen(screenId) {
-    const screens = document.querySelectorAll('.screen');
-    screens.forEach(screen => screen.classList.remove('active'));
-    
-    const targetScreen = document.getElementById(screenId);
-    if (targetScreen) {
-        targetScreen.classList.add('active');
+// --- راه‌اندازی دیتابیس PostgreSQL ---
+const pool = new Pool({
+    connectionString: DATABASE_URL,
+    ssl: {
+        require: true,
+        rejectUnauthorized: false
     }
-    
-    // پاکسازی محتوای داینامیک
-    if (screenId === 'mainMenu') {
-        document.getElementById('waitingGamesList').innerHTML = '';
-    }
-}
+});
 
-function showNotification(message, type = 'info') {
-    const notification = document.createElement('div');
-    notification.className = `notification ${type}`;
-    notification.textContent = message;
-    
-    document.body.appendChild(notification);
-    
-    setTimeout(() => {
-        notification.remove();
-    }, 5000);
-}
+// --- راه‌اندازی ربات تلگرام ---
+const bot = new TelegramBot(BOT_TOKEN, { polling: true });
+console.log('🤖 ربات تلگرام فعال شد.');
 
-function showGameMessage(message, type = 'info') {
-    const messagesContainer = document.getElementById('gameMessages');
-    if (!messagesContainer) return;
-    
-    const messageElement = document.createElement('div');
-    messageElement.className = `game-message ${type}`;
-    messageElement.textContent = message;
-    
-    messagesContainer.appendChild(messageElement);
-    messagesContainer.scrollTop = messagesContainer.scrollHeight;
-}
+// --- مجموعه کلمات لیگ ---
+const leagueWords = {
+    "حیوانات": ["شیر", "فیل", "گربه", "سگ", "خرس", "گرگ", "روباه", "خرگوش", "گاو", "گوسفند", "ببر", "پلنگ", "زرافه", "کرگدن", "اسب", "الاغ", "قوچ", "بز", "شتر", "خوک"],
+    "میوه‌ها": ["سیب", "موز", "پرتقال", "نارنگی", "لیمو", "گریپ فروت", "انار", "انگور", "هلو", "زردآلو", "شلیل", "آلو", "گیلاس", "آلبالو", "توت", "تمشک", "شاتوت", "توت فرنگی", "انجیر", "خرمالو"],
+    "سبزیجات": ["هویج", "سیب زمینی", "پیاز", "سیر", "کلم", "کاهو", "اسفناج", "جعفری", "نعناع", "تربچه", "شلغم", "چغندر", "کدو", "بادمجان", "فلفل", "گوجه", "خیار", "کرفس", "قارچ", "ذرت"],
+    "شهرها": ["تهران", "مشهد", "اصفهان", "شیراز", "تبریز", "کرج", "قم", "اهواز", "کرمانشاه", "ارومیه", "رشت", "زاهدان", "کرمان", "همدان", "یزد", "اردبیل", "بندرعباس", "خرم‌آباد", "ساری", "گرگان"],
+    "کشورها": ["ایران", "عراق", "ترکیه", "افغانستان", "پاکستان", "عربستان", "امارات", "قطر", "کویت", "عمان", "یمن", "اردن", "سوریه", "لبنان", "مصر", "مراکش", "الجزایر", "تونس", "لیبی", "سودان"],
+    "اشیا": ["میز", "صندلی", "کتاب", "قلم", "دفتر", "مداد", "پاک‌کن", "خط‌کش", "گچ", "تخته", "کامپیوتر", "موبایل", "تبلت", "لپ‌تاپ", "مانیتور", "کیبورد", "ماوس", "هدفون", "اسپیکر", "میکروفون"],
+    "حرفه‌ها": ["پزشک", "مهندس", "معلم", "پرستار", "پلیس", "آتش‌نشان", "خلبان", "راننده", "کشاورز", "دامدار", "باغبان", "نجار", "آهنگر", "جوشکار", "برقکار", "لوله‌کش", "نقاش", "مجسمه‌ساز", "عکاس", "فیلمبردار"],
+    "ورزش‌ها": ["فوتبال", "والیبال", "بسکتبال", "تنیس", "بدمینتون", "پینگ‌پنگ", "گلف", "هاکی", "کریکت", "بیسبال", "بوکس", "کشتی", "جودو", "کاراته", "تکواندو", "کونگ‌فو", "موای‌تای", "کیک‌بوکسینگ", "مبارزه", "شمشیربازی"],
+    "غذاها": ["قورمه‌سبزی", "قیمه", "خورشت", "کباب", "جوجه‌کباب", "چلوکباب", "برنج", "پلو", "چلو", "عدس‌پلو", "لوبیاپلو", "سبزی‌پلو", "ماهی‌پلو", "آلبالوپلو", "زرشک‌پلو", "شویدپلو", "استامبولی", "دلمه", "دلمه‌برگ", "دلمه‌فلفل"],
+    "رنگ‌ها": ["قرمز", "نارنجی", "زرد", "سبز", "آبی", "نیلی", "بنفش", "صورتی", "قهوه‌ای", "مشکی", "سفید", "خاکستری", "نقره‌ای", "طلایی", "برنزی", "نقره", "طلا", "مس", "برنج", "آهن"]
+};
 
-// --- مدیریت کاربر و ورود ---
-function initializeUser() {
+// --- منطق ربات تلگرام ---
+bot.onText(/\/start/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    const name = msg.from.first_name || msg.from.username || 'کاربر ناشناس';
+
     try {
-        if (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) {
-            const tgUser = tg.initDataUnsafe.user;
-            const userId = tgUser.id.toString();
-            const name = tgUser.first_name || 'کاربر';
-            
-            socket.emit('user_login', { userId, name });
-        } else {
-            // حالت توسعه
-            const devUserId = 'dev_' + Math.random().toString(36).substr(2, 9);
-            const devName = 'تست کاربر';
-            
-            socket.emit('user_login', { userId: devUserId, name: devName });
-        }
-    } catch (error) {
-        console.error('خطای راه‌اندازی کاربر:', error);
-        showNotification('خطا در راه‌اندازی کاربر', 'error');
-    }
-}
-
-// --- مدیریت بازی ---
-function createGame() {
-    const wordInput = document.getElementById('gameWord');
-    const categoryInput = document.getElementById('gameCategory');
-    
-    const word = wordInput.value.trim();
-    const category = categoryInput.value.trim();
-    
-    if (!word || !category) {
-        showNotification('لطفا کلمه و دسته‌بندی را وارد کنید.', 'error');
-        return;
-    }
-    
-    // اعتبارسنجی کلمه - اجازه فاصله در کلمه
-    if (!/^[\u0600-\u06FF\s]+$/.test(word) || word.replace(/\s/g, '').length < 3) {
-        showNotification('کلمه وارد شده نامعتبر است. فقط حروف فارسی و فاصله مجاز است و حداقل باید ۳ حرف داشته باشد.', 'error');
-        return;
-    }
-    
-    socket.emit('create_game', { 
-        userId: currentUser.userId, 
-        word: word, 
-        category: category 
-    });
-    
-    // پاکسازی فرم
-    wordInput.value = '';
-    categoryInput.value = '';
-}
-
-function joinGame(gameCode) {
-    if (!gameCode) {
-        showNotification('لطفا کد بازی را وارد کنید.', 'error');
-        return;
-    }
-    
-    socket.emit('join_game', { 
-        userId: currentUser.userId, 
-        gameCode: gameCode.toUpperCase() 
-    });
-}
-
-function listWaitingGames() {
-    socket.emit('list_waiting_games');
-}
-
-function displayWaitingGames(games) {
-    const container = document.getElementById('waitingGamesList');
-    container.innerHTML = '';
-    
-    if (games.length === 0) {
-        container.innerHTML = '<p class="no-games">هیچ بازی در انتظاری وجود ندارد.</p>';
-        return;
-    }
-    
-    games.forEach(game => {
-        const gameElement = document.createElement('div');
-        gameElement.className = 'waiting-game';
-        gameElement.innerHTML = `
-            <div class="game-info">
-                <strong>کد: ${game.code}</strong>
-                <span>سازنده: ${game.creatorName}</span>
-                <span>دسته: ${game.category}</span>
-                <span>طول کلمه: ${game.wordLength}</span>
-            </div>
-            <button onclick="joinGame('${game.code}')">پیوستن</button>
-        `;
-        container.appendChild(gameElement);
-    });
-}
-
-function updateGameDisplay(gameState) {
-    // به‌روزرسانی اطلاعات بازی
-    document.getElementById('gameCodeDisplay').textContent = gameState.code;
-    document.getElementById('gameCategoryDisplay').textContent = gameState.category;
-    document.getElementById('gameStatusDisplay').textContent = getStatusText(gameState.status);
-    document.getElementById('guessesLeftDisplay').textContent = gameState.guessesLeft;
-    
-    // نمایش کلمه با فاصله‌ها
-    displayWordWithSpaces(gameState.word, gameState.revealedLetters);
-    
-    // نمایش حروف حدس زده شده
-    displayGuessedLetters(gameState.guessedLetters);
-    
-    // نمایش اطلاعات بازیکنان
-    updatePlayersDisplay(gameState.creator, gameState.guesser);
-    
-    // فعال/غیرفعال کردن دکمه‌ها بر اساس نقش کاربر
-    const guessInput = document.getElementById('guessInput');
-    const submitGuessBtn = document.getElementById('submitGuessBtn');
-    const hintBtn = document.getElementById('hintBtn');
-    
-    if (currentGame.role === 'guesser' && gameState.status === 'in_progress') {
-        guessInput.disabled = false;
-        submitGuessBtn.disabled = false;
-        hintBtn.disabled = false;
-    } else {
-        guessInput.disabled = true;
-        submitGuessBtn.disabled = true;
-        hintBtn.disabled = true;
-    }
-}
-
-function displayWordWithSpaces(word, revealedLetters) {
-    const wordContainer = document.getElementById('wordDisplay');
-    wordContainer.innerHTML = '';
-    
-    for (let i = 0; i < word.length; i++) {
-        const letter = word[i];
-        const letterElement = document.createElement('span');
-        letterElement.className = 'letter';
+        await pool.query(
+            `INSERT INTO users (telegram_id, name) VALUES ($1, $2)
+            ON CONFLICT (telegram_id) DO UPDATE SET name = EXCLUDED.name`,
+            [userId.toString(), name]
+        );
         
-        // بررسی اینکه آیا حرف فاصله است
-        if (letter === ' ') {
-            letterElement.classList.add('space-box');
-            letterElement.innerHTML = '&nbsp;';
-        } else {
-            // بررسی اینکه آیا حرف باید نمایش داده شود
-            const isRevealed = Object.values(revealedLetters).flat().includes(i);
-            
-            if (isRevealed) {
-                letterElement.textContent = letter;
-                letterElement.classList.add('revealed');
-            } else {
-                letterElement.textContent = '_';
-                letterElement.classList.add('hidden');
-            }
-        }
-        
-        wordContainer.appendChild(letterElement);
-    }
-}
+        const welcomeMessage = `سلام ${name}، به بازی Wordly خوش آمدید! 🤖`;
+        const inlineKeyboard = {
+            inline_keyboard: [
+                [
+                    {
+                        text: 'شروع بازی (Mini App)',
+                        web_app: { url: FRONTEND_URL }
+                    }
+                ]
+            ]
+        };
 
-function displayGuessedLetters(guessedLetters) {
-    const container = document.getElementById('guessedLetters');
-    container.innerHTML = '';
-    
-    if (guessedLetters && guessedLetters.length > 0) {
-        container.textContent = `حروف حدس زده شده: ${guessedLetters.join(', ')}`;
-    } else {
-        container.textContent = 'هنوز حرفی حدس زده نشده است.';
-    }
-}
-
-function updatePlayersDisplay(creator, guesser) {
-    document.getElementById('creatorName').textContent = creator.name;
-    document.getElementById('creatorScore').textContent = creator.score;
-    
-    if (guesser) {
-        document.getElementById('guesserName').textContent = guesser.name;
-        document.getElementById('guesserScore').textContent = guesser.score;
-        document.getElementById('guesserInfo').style.display = 'block';
-    } else {
-        document.getElementById('guesserInfo').style.display = 'none';
-    }
-}
-
-function submitGuess() {
-    const guessInput = document.getElementById('guessInput');
-    const letter = guessInput.value.trim();
-    
-    if (!letter || letter.length !== 1) {
-        showNotification('لطفا فقط یک حرف فارسی وارد کنید.', 'error');
-        return;
-    }
-    
-    socket.emit('submit_guess', {
-        userId: currentUser.userId,
-        gameCode: currentGame.code,
-        letter: letter
-    });
-    
-    guessInput.value = '';
-}
-
-function requestHint() {
-    const position = prompt('موقعیت حرف مورد نظر برای راهنمایی را وارد کنید (شماره از 1 شروع می‌شود):');
-    
-    if (position && !isNaN(position)) {
-        const positionIndex = parseInt(position) - 1;
-        
-        socket.emit('request_hint', {
-            userId: currentUser.userId,
-            gameCode: currentGame.code,
-            letterPosition: positionIndex
+        bot.sendMessage(chatId, welcomeMessage, { 
+            reply_markup: inlineKeyboard
         });
-    }
-}
 
-// --- مدیریت لیگ ---
-function createLeague() {
-    socket.emit('create_league', { userId: currentUser.userId });
-}
-
-function joinLeague() {
-    const leagueCodeInput = document.getElementById('leagueCodeInput');
-    const leagueCode = leagueCodeInput.value.trim();
-    
-    if (!leagueCode) {
-        showNotification('لطفا کد لیگ را وارد کنید.', 'error');
-        return;
-    }
-    
-    socket.emit('join_league', { 
-        userId: currentUser.userId, 
-        leagueCode: leagueCode.toUpperCase() 
-    });
-    
-    leagueCodeInput.value = '';
-}
-
-function startLeague() {
-    if (!currentLeague) return;
-    
-    socket.emit('start_league', { 
-        userId: currentUser.userId, 
-        leagueCode: currentLeague.code 
-    });
-}
-
-function updateLeagueDisplay(leagueState) {
-    // به‌روزرسانی اطلاعات کلی لیگ
-    document.getElementById('leagueCodeDisplay').textContent = leagueState.code;
-    document.getElementById('leagueStatusDisplay').textContent = getLeagueStatusText(leagueState.status);
-    document.getElementById('currentWordNumber').textContent = leagueState.currentWordNumber;
-    document.getElementById('totalWords').textContent = leagueState.totalWords;
-    document.getElementById('playerCount').textContent = leagueState.playerCount;
-    
-    // نمایش کلمه فعلی (اگر در حال بازی باشد)
-    if (leagueState.status === 'in_progress' && leagueState.currentWord) {
-        displayLeagueWord(leagueState.currentWord, leagueState.currentCategory);
-    } else {
-        document.getElementById('leagueWordDisplay').innerHTML = '';
-        document.getElementById('leagueCategoryDisplay').textContent = '-';
-    }
-    
-    // نمایش جدول بازیکنان
-    displayLeaguePlayers(leagueState.players);
-    
-    // فعال/غیرفعال کردن دکمه شروع
-    const startLeagueBtn = document.getElementById('startLeagueBtn');
-    if (leagueState.status === 'waiting') {
-        startLeagueBtn.style.display = 'block';
-    } else {
-        startLeagueBtn.style.display = 'none';
-    }
-    
-    // فعال/غیرفعال کردن ورودی حدس
-    const leagueGuessInput = document.getElementById('leagueGuessInput');
-    const submitLeagueGuessBtn = document.getElementById('submitLeagueGuessBtn');
-    
-    if (leagueState.status === 'in_progress') {
-        leagueGuessInput.disabled = false;
-        submitLeagueGuessBtn.disabled = false;
-    } else {
-        leagueGuessInput.disabled = true;
-        submitLeagueGuessBtn.disabled = true;
-    }
-}
-
-function displayLeagueWord(word, category) {
-    const wordContainer = document.getElementById('leagueWordDisplay');
-    const categoryContainer = document.getElementById('leagueCategoryDisplay');
-    
-    categoryContainer.textContent = category || '-';
-    wordContainer.innerHTML = '';
-    
-    // نمایش کلمه لیگ با فاصله‌ها
-    for (let i = 0; i < word.length; i++) {
-        const letter = word[i];
-        const letterElement = document.createElement('span');
-        letterElement.className = 'letter';
+        bot.sendMessage(chatId, `کد کاربری شما: ${userId}`);
+        console.log(`🤖 ربات به کاربر ${userId} پاسخ /start داد.`);
         
-        if (letter === ' ') {
-            letterElement.classList.add('space-box');
-            letterElement.innerHTML = '&nbsp;';
-        } else {
-            letterElement.textContent = '_';
-            letterElement.classList.add('hidden');
-        }
-        
-        wordContainer.appendChild(letterElement);
+    } catch (error) {
+        console.error('❌ خطای پردازش فرمان /start:', error);
+        bot.sendMessage(chatId, 'خطایی در ثبت‌نام شما در دیتابیس رخ داد. لطفا دوباره تلاش کنید.');
     }
-}
-
-function displayLeaguePlayers(players) {
-    const container = document.getElementById('leaguePlayersList');
-    container.innerHTML = '';
-    
-    if (!players || players.length === 0) {
-        container.innerHTML = '<p class="no-players">هیچ بازیکنی در لیگ وجود ندارد.</p>';
-        return;
-    }
-    
-    players.forEach((player, index) => {
-        const playerElement = document.createElement('div');
-        playerElement.className = 'league-player';
-        
-        if (index === 0) {
-            playerElement.classList.add('leader');
-        }
-        
-        playerElement.innerHTML = `
-            <div class="player-rank">${index + 1}</div>
-            <div class="player-name">${player.name}</div>
-            <div class="player-score">${player.score} امتیاز</div>
-            <div class="player-stats">
-                ${player.correct_words} کلمه | ${Math.floor(player.total_time / 60)}:${(player.total_time % 60).toString().padStart(2, '0')}
-            </div>
-        `;
-        
-        container.appendChild(playerElement);
-    });
-}
-
-function submitLeagueGuess() {
-    const guessInput = document.getElementById('leagueGuessInput');
-    const letter = guessInput.value.trim();
-    
-    if (!letter || letter.length !== 1) {
-        showNotification('لطفا فقط یک حرف فارسی وارد کنید.', 'error');
-        return;
-    }
-    
-    socket.emit('submit_league_guess', {
-        userId: currentUser.userId,
-        leagueCode: currentLeague.code,
-        letter: letter
-    });
-    
-    guessInput.value = '';
-}
+});
 
 // --- توابع کمکی ---
-function getStatusText(status) {
-    const statusMap = {
-        'waiting': 'در انتظار بازیکن',
-        'in_progress': 'در حال بازی',
-        'finished': 'پایان یافته',
-        'cancelled': 'لغو شده'
-    };
-    return statusMap[status] || status;
+function generateGameCode() {
+    return Math.random().toString(36).substring(2, 6).toUpperCase();
 }
 
-function getLeagueStatusText(status) {
-    const statusMap = {
-        'waiting': 'در انتظار بازیکنان',
-        'starting': 'در حال شروع',
-        'in_progress': 'در حال بازی',
-        'ended': 'پایان یافته'
-    };
-    return statusMap[status] || status;
-}
-
-function updateLeaderboard(players) {
-    const container = document.getElementById('leaderboardList');
-    container.innerHTML = '';
+function getRandomLeagueWord() {
+    const categories = Object.keys(leagueWords);
+    const randomCategory = categories[Math.floor(Math.random() * categories.length)];
+    const wordsInCategory = leagueWords[randomCategory];
+    const randomWord = wordsInCategory[Math.floor(Math.random() * wordsInCategory.length)];
     
-    if (!players || players.length === 0) {
-        container.innerHTML = '<p class="no-data">هنوز امتیازی ثبت نشده است.</p>';
-        return;
+    return {
+        word: randomWord,
+        category: randomCategory
+    };
+}
+
+// --- اتصال و ایجاد جداول دیتابیس ---
+async function setupDatabase() {
+    try {
+        const client = await pool.connect();
+        console.log('✅ اتصال به دیتابیس برقرار شد.');
+
+        // جدول کاربران
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                telegram_id VARCHAR(255) UNIQUE NOT NULL,
+                name VARCHAR(255) NOT NULL,
+                score INT DEFAULT 0,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
+        // جدول بازی‌ها
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS games (
+                id SERIAL PRIMARY KEY,
+                code VARCHAR(10) UNIQUE NOT NULL,
+                creator_id VARCHAR(255) NOT NULL REFERENCES users(telegram_id),
+                guesser_id VARCHAR(255),
+                word VARCHAR(255) NOT NULL,
+                category VARCHAR(100) NOT NULL,
+                max_guesses INT NOT NULL,
+                guesses_left INT NOT NULL,
+                correct_guesses INT DEFAULT 0,
+                incorrect_guesses INT DEFAULT 0,
+                revealed_letters JSONB DEFAULT '{}',
+                guessed_letters VARCHAR(1)[] DEFAULT '{}',
+                start_time TIMESTAMP WITH TIME ZONE,
+                end_time TIMESTAMP WITH TIME ZONE,
+                status VARCHAR(20) DEFAULT 'waiting' CHECK (status IN ('waiting', 'in_progress', 'finished', 'cancelled')),
+                winner_id VARCHAR(255),
+                FOREIGN KEY (guesser_id) REFERENCES users(telegram_id),
+                FOREIGN KEY (winner_id) REFERENCES users(telegram_id)
+            );
+        `);
+
+        // جداول لیگ
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS leagues (
+                id SERIAL PRIMARY KEY,
+                code VARCHAR(10) UNIQUE NOT NULL,
+                status VARCHAR(20) DEFAULT 'waiting' CHECK (status IN ('waiting', 'starting', 'in_progress', 'ended')),
+                current_word_number INT DEFAULT 1,
+                total_words INT DEFAULT 10,
+                start_time TIMESTAMP WITH TIME ZONE,
+                end_time TIMESTAMP WITH TIME ZONE,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS league_players (
+                id SERIAL PRIMARY KEY,
+                league_id INT NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
+                user_id VARCHAR(255) NOT NULL REFERENCES users(telegram_id),
+                score INT DEFAULT 0,
+                correct_words INT DEFAULT 0,
+                total_time INT DEFAULT 0,
+                joined_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(league_id, user_id)
+            );
+        `);
+
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS league_words (
+                id SERIAL PRIMARY KEY,
+                league_id INT NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
+                word_number INT NOT NULL,
+                word VARCHAR(255) NOT NULL,
+                category VARCHAR(100) NOT NULL,
+                max_guesses INT NOT NULL,
+                status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'active', 'completed'))
+            );
+        `);
+
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS league_player_words (
+                id SERIAL PRIMARY KEY,
+                league_id INT NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
+                user_id VARCHAR(255) NOT NULL REFERENCES users(telegram_id),
+                word_number INT NOT NULL,
+                word VARCHAR(255) NOT NULL,
+                category VARCHAR(100) NOT NULL,
+                guesses_left INT NOT NULL,
+                correct_guesses INT DEFAULT 0,
+                incorrect_guesses INT DEFAULT 0,
+                revealed_letters JSONB DEFAULT '{}',
+                guessed_letters VARCHAR(1)[] DEFAULT '{}',
+                start_time TIMESTAMP WITH TIME ZONE,
+                end_time TIMESTAMP WITH TIME ZONE,
+                status VARCHAR(20) DEFAULT 'in_progress' CHECK (status IN ('in_progress', 'completed', 'failed')),
+                time_taken INT DEFAULT 0,
+                score_earned INT DEFAULT 0,
+                UNIQUE(league_id, user_id, word_number)
+            );
+        `);
+
+        console.log('✅ جداول دیتابیس بررسی و ایجاد شدند.');
+        client.release();
+    } catch (err) {
+        console.error('❌ خطای راه‌اندازی دیتابیس:', err.message);
+        process.exit(1);
     }
-    
-    players.forEach((player, index) => {
-        const playerElement = document.createElement('div');
-        playerElement.className = 'leaderboard-player';
-        
-        if (index < 3) {
-            playerElement.classList.add(`top-${index + 1}`);
-        }
-        
-        playerElement.innerHTML = `
-            <div class="rank">${index + 1}</div>
-            <div class="name">${player.name}</div>
-            <div class="score">${player.score}</div>
-        `;
-        
-        container.appendChild(playerElement);
-    });
 }
 
-// --- راه‌اندازی اولیه ---
-document.addEventListener('DOMContentLoaded', function() {
-    initializeSocket();
-    initializeUser();
-    
-    // تنظیم event listeners
-    document.getElementById('createGameBtn').addEventListener('click', () => showScreen('createGame'));
-    document.getElementById('joinGameBtn').addEventListener('click', () => showScreen('joinGame'));
-    document.getElementById('listGamesBtn').addEventListener('click', () => {
-        showScreen('waitingGames');
-        listWaitingGames();
+// --- راه‌اندازی سرور Express و Socket.io ---
+const app = express();
+const server = http.createServer(app);
+
+app.use(cors({
+    origin: FRONTEND_URL,
+    methods: ['GET', 'POST']
+}));
+
+app.use(express.json());
+
+const io = new Server(server, {
+    cors: {
+        origin: FRONTEND_URL,
+        methods: ['GET', 'POST']
+    }
+});
+
+// --- توابع مدیریت وضعیت ---
+async function emitGameState(gameCode) {
+    try {
+        const result = await pool.query('SELECT * FROM games WHERE code = $1', [gameCode]);
+        const game = result.rows[0];
+
+        if (game) {
+            const creator = (await pool.query('SELECT telegram_id, name, score FROM users WHERE telegram_id = $1', [game.creator_id])).rows[0];
+            let guesser = null;
+            if (game.guesser_id) {
+                guesser = (await pool.query('SELECT telegram_id, name, score FROM users WHERE telegram_id = $1', [game.guesser_id])).rows[0];
+            }
+
+            const gameState = {
+                code: game.code,
+                status: game.status,
+                category: game.category,
+                wordLength: game.word.length,
+                maxGuesses: game.max_guesses,
+                guessesLeft: game.guesses_left,
+                correctGuesses: game.correct_guesses,
+                incorrectGuesses: game.incorrect_guesses,
+                revealedLetters: game.revealed_letters,
+                guessedLetters: game.guessed_letters,
+                startTime: game.start_time,
+                creator: creator,
+                guesser: guesser,
+                word: game.word // اضافه کردن کلمه اصلی به وضعیت بازی
+            };
+
+            io.to(gameCode).emit('game_update', gameState);
+            console.log(`📡 وضعیت جدید بازی ${gameCode} ارسال شد.`);
+        } else {
+            io.to(gameCode).emit('game_error', { message: 'بازی مورد نظر یافت نشد.' });
+        }
+    } catch (error) {
+        console.error(`❌ خطای ارسال وضعیت بازی ${gameCode}:`, error);
+    }
+}
+
+async function updateScoreAndEmitLeaderboard(userId, points) {
+    await pool.query('UPDATE users SET score = score + $1 WHERE telegram_id = $2', [points, userId]);
+    await emitLeaderboard();
+}
+
+async function emitLeaderboard() {
+    try {
+        const result = await pool.query('SELECT name, score FROM users ORDER BY score DESC LIMIT 10');
+        io.emit('leaderboard_update', result.rows);
+    } catch (error) {
+        console.error('❌ خطای ارسال جدول رتبه‌بندی:', error);
+    }
+}
+
+// --- توابع مدیریت لیگ ---
+async function emitLeagueState(leagueCode) {
+    try {
+        const leagueResult = await pool.query('SELECT * FROM leagues WHERE code = $1', [leagueCode]);
+        const league = leagueResult.rows[0];
+        
+        if (!league) return;
+
+        // دریافت بازیکنان لیگ
+        const playersResult = await pool.query(`
+            SELECT u.telegram_id, u.name, lp.score, lp.correct_words, lp.total_time
+            FROM league_players lp
+            JOIN users u ON lp.user_id = u.telegram_id
+            WHERE lp.league_id = $1
+            ORDER BY lp.score DESC
+        `, [league.id]);
+
+        const players = playersResult.rows;
+
+        // دریافت کلمه فعلی
+        let currentWord = null;
+        let currentCategory = null;
+        
+        if (league.status === 'in_progress') {
+            const currentWordResult = await pool.query(`
+                SELECT word, category FROM league_words 
+                WHERE league_id = $1 AND word_number = $2
+            `, [league.id, league.current_word_number]);
+            
+            if (currentWordResult.rows.length > 0) {
+                currentWord = currentWordResult.rows[0].word;
+                currentCategory = currentWordResult.rows[0].category;
+            }
+        }
+
+        // ساخت وضعیت لیگ برای ارسال
+        const leagueState = {
+            code: league.code,
+            status: league.status,
+            currentWordNumber: league.current_word_number,
+            totalWords: league.total_words,
+            players: players,
+            currentWord: currentWord,
+            currentCategory: currentCategory,
+            playerCount: players.length
+        };
+
+        // ارسال به تمام بازیکنان لیگ
+        io.to(leagueCode).emit('leagueStatus', leagueState);
+        console.log(`📡 وضعیت جدید لیگ ${leagueCode} ارسال شد. بازیکنان: ${players.length}`);
+
+    } catch (error) {
+        console.error(`❌ خطای ارسال وضعیت لیگ ${leagueCode}:`, error);
+    }
+}
+
+async function startLeague(leagueCode) {
+    try {
+        // به‌روزرسانی وضعیت لیگ
+        await pool.query(
+            'UPDATE leagues SET status = $1, start_time = NOW() WHERE code = $2',
+            ['starting', leagueCode]
+        );
+
+        // دریافت اطلاعات لیگ
+        const leagueResult = await pool.query('SELECT * FROM leagues WHERE code = $1', [leagueCode]);
+        const league = leagueResult.rows[0];
+
+        // تولید 10 کلمه تصادفی برای لیگ
+        const words = [];
+        for (let i = 1; i <= 10; i++) {
+            const { word, category } = getRandomLeagueWord();
+            words.push({
+                league_id: league.id,
+                word_number: i,
+                word: word,
+                category: category,
+                max_guesses: Math.ceil(word.length * 1.5),
+                status: i === 1 ? 'active' : 'pending'
+            });
+        }
+
+        // ذخیره کلمات در دیتابیس
+        for (const wordData of words) {
+            await pool.query(`
+                INSERT INTO league_words (league_id, word_number, word, category, max_guesses, status)
+                VALUES ($1, $2, $3, $4, $5, $6)
+            `, [wordData.league_id, wordData.word_number, wordData.word, wordData.category, 
+                wordData.max_guesses, wordData.status]);
+        }
+
+        // ارسال وضعیت شروع
+        await emitLeagueState(leagueCode);
+
+        // شروع اولین کلمه پس از تأخیر
+        setTimeout(async () => {
+            await pool.query(
+                'UPDATE leagues SET status = $1 WHERE code = $2',
+                ['in_progress', leagueCode]
+            );
+            
+            // ارسال وضعیت جدید
+            await emitLeagueState(leagueCode);
+            
+            // اطلاع‌رسانی شروع لیگ
+            io.to(leagueCode).emit('leagueStarted', {
+                code: leagueCode,
+                status: 'in_progress',
+                currentWordNumber: 1,
+                totalWords: 10
+            });
+
+            console.log(`🎮 لیگ ${leagueCode} شروع شد.`);
+            
+        }, 3000);
+
+    } catch (error) {
+        console.error(`❌ خطای شروع لیگ ${leagueCode}:`, error);
+    }
+}
+
+async function startLeagueWord(leagueCode, wordNumber) {
+    try {
+        // دریافت اطلاعات لیگ
+        const leagueResult = await pool.query('SELECT * FROM leagues WHERE code = $1', [leagueCode]);
+        const league = leagueResult.rows[0];
+
+        // به‌روزرسانی وضعیت کلمه قبلی
+        if (wordNumber > 1) {
+            await pool.query(`
+                UPDATE league_words SET status = 'completed' 
+                WHERE league_id = $1 AND word_number = $2
+            `, [league.id, wordNumber - 1]);
+        }
+
+        // به‌روزرسانی وضعیت کلمه جدید
+        await pool.query(`
+            UPDATE league_words SET status = 'active' 
+            WHERE league_id = $1 AND word_number = $2
+        `, [league.id, wordNumber]);
+
+        // به‌روزرسانی شماره کلمه فعلی در لیگ
+        await pool.query(`
+            UPDATE leagues SET current_word_number = $1 
+            WHERE code = $2
+        `, [wordNumber, leagueCode]);
+
+        // ایجاد رکوردهای جدید برای بازیکنان
+        const playersResult = await pool.query(`
+            SELECT user_id FROM league_players WHERE league_id = $1
+        `, [league.id]);
+
+        const currentWordResult = await pool.query(`
+            SELECT word, category, max_guesses FROM league_words 
+            WHERE league_id = $1 AND word_number = $2
+        `, [league.id, wordNumber]);
+
+        if (currentWordResult.rows.length === 0) return;
+
+        const currentWord = currentWordResult.rows[0];
+
+        for (const player of playersResult.rows) {
+            await pool.query(`
+                INSERT INTO league_player_words 
+                (league_id, user_id, word_number, word, category, guesses_left, start_time)
+                VALUES ($1, $2, $3, $4, $5, $6, NOW())
+                ON CONFLICT (league_id, user_id, word_number) DO NOTHING
+            `, [league.id, player.user_id, wordNumber, currentWord.word, 
+                currentWord.category, currentWord.max_guesses]);
+        }
+
+        // ارسال وضعیت جدید
+        await emitLeagueState(leagueCode);
+
+        // اطلاع‌رسانی شروع کلمه جدید
+        io.to(leagueCode).emit('leagueWordStarted', {
+            code: leagueCode,
+            currentWordNumber: wordNumber,
+            totalWords: 10,
+            currentCategory: currentWord.category
+        });
+
+        console.log(`📝 کلمه ${wordNumber} در لیگ ${leagueCode} شروع شد.`);
+
+    } catch (error) {
+        console.error(`❌ خطای شروع کلمه جدید در لیگ ${leagueCode}:`, error);
+    }
+}
+
+async function endLeague(leagueCode) {
+    try {
+        // به‌روزرسانی وضعیت لیگ
+        await pool.query(
+            'UPDATE leagues SET status = $1, end_time = NOW() WHERE code = $2',
+            ['ended', leagueCode]
+        );
+
+        // دریافت برنده لیگ
+        const winnerResult = await pool.query(`
+            SELECT u.telegram_id, u.name, lp.score
+            FROM league_players lp
+            JOIN users u ON lp.user_id = u.telegram_id
+            WHERE lp.league_id = (SELECT id FROM leagues WHERE code = $1)
+            ORDER BY lp.score DESC
+            LIMIT 1
+        `, [leagueCode]);
+
+        const winner = winnerResult.rows[0];
+
+        // ارسال وضعیت نهایی
+        await emitLeagueState(leagueCode);
+
+        // اطلاع‌رسانی پایان لیگ
+        io.to(leagueCode).emit('leagueEnded', {
+            code: leagueCode,
+            status: 'ended',
+            winner: winner
+        });
+
+        console.log(`🏆 لیگ ${leagueCode} به پایان رسید. برنده: ${winner?.name || 'نامشخص'}`);
+
+    } catch (error) {
+        console.error(`❌ خطای پایان لیگ ${leagueCode}:`, error);
+    }
+}
+
+// --- منطق Socket.io ---
+io.on('connection', (socket) => {
+    console.log(`➕ کاربر جدید متصل شد: ${socket.id}`);
+
+    let currentUserId = null;
+    let currentUserName = null;
+
+    // --- (۱) ورود و ثبت‌نام کاربر ---
+    socket.on('user_login', async ({ userId, name }) => {
+        try {
+            currentUserId = userId;
+            currentUserName = name;
+            
+            // ثبت یا به‌روزرسانی کاربر
+            await pool.query(
+                `INSERT INTO users (telegram_id, name) VALUES ($1, $2)
+                ON CONFLICT (telegram_id) DO UPDATE SET name = EXCLUDED.name`,
+                [userId, name]
+            );
+
+            socket.join(`user:${userId}`);
+            console.log(`👤 کاربر وارد شد: ${name} (${userId})`);
+            
+            // اتصال مجدد به بازی فعال
+            const activeGamesResult = await pool.query(
+                `SELECT code FROM games 
+                WHERE (creator_id = $1 OR guesser_id = $1) 
+                AND status IN ('waiting', 'in_progress')`, 
+                [userId]
+            );
+
+            if (activeGamesResult.rows.length > 0) {
+                const gameCode = activeGamesResult.rows[0].code;
+                socket.join(gameCode);
+                console.log(`🔗 کاربر ${userId} به بازی فعال ${gameCode} ملحق شد.`);
+                await emitGameState(gameCode); 
+            }
+
+            // اتصال مجدد به لیگ فعال
+            const activeLeaguesResult = await pool.query(`
+                SELECT l.code 
+                FROM leagues l
+                JOIN league_players lp ON l.id = lp.league_id
+                WHERE lp.user_id = $1 AND l.status IN ('waiting', 'starting', 'in_progress')
+            `, [userId]);
+
+            if (activeLeaguesResult.rows.length > 0) {
+                const leagueCode = activeLeaguesResult.rows[0].code;
+                socket.join(leagueCode);
+                console.log(`🔗 کاربر ${userId} به لیگ فعال ${leagueCode} ملحق شد.`);
+                await emitLeagueState(leagueCode);
+            }
+
+            socket.emit('login_success', { name, userId });
+            await emitLeaderboard();
+
+        } catch (error) {
+            console.error('❌ خطای ورود کاربر:', error);
+            socket.emit('login_error', { message: 'خطا در ثبت اطلاعات کاربری.' });
+        }
     });
-    document.getElementById('createLeagueBtn').addEventListener('click', () => showScreen('createLeague'));
-    document.getElementById('joinLeagueBtn').addEventListener('click', () => showScreen('joinLeague'));
-    document.getElementById('leaderboardBtn').addEventListener('click', () => {
-        showScreen('leaderboard');
-        socket.emit('get_leaderboard');
+
+    // --- (۲) ایجاد بازی ---
+    socket.on('create_game', async ({ userId, word, category }) => {
+        if (!userId || !word || !category) {
+            return socket.emit('game_error', { message: 'اطلاعات کامل نیست.' });
+        }
+
+        try {
+            const gameCode = generateGameCode();
+            const maxGuesses = Math.ceil(word.length * 1.5);
+            const revealedLetters = {};
+            
+            // اعتبارسنجی کلمه - اجازه فاصله در کلمه
+            if (!/^[\u0600-\u06FF\s]+$/.test(word) || word.replace(/\s/g, '').length < 3) {
+                 return socket.emit('game_error', { message: 'کلمه وارد شده نامعتبر است. فقط حروف فارسی و فاصله مجاز است و حداقل باید ۳ حرف داشته باشد.' });
+            }
+            
+            const result = await pool.query(
+                `INSERT INTO games (code, creator_id, word, category, max_guesses, guesses_left, revealed_letters, status)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, 'waiting') RETURNING *`,
+                [gameCode, userId, word, category, maxGuesses, maxGuesses, revealedLetters]
+            );
+            
+            const newGame = result.rows[0];
+            socket.join(gameCode);
+            socket.emit('game_created', { code: gameCode });
+            console.log(`🎮 بازی جدید ایجاد شد: ${gameCode} توسط ${userId} - کلمه: "${word}"`);
+            await emitGameState(gameCode);
+            
+        } catch (error) {
+            console.error('❌ خطای ایجاد بازی:', error);
+            socket.emit('game_error', { message: 'خطا در ایجاد بازی.' });
+        }
+    });
+
+    // --- (۳) لیست بازی‌های منتظر ---
+    socket.on('list_waiting_games', async () => {
+        try {
+            const result = await pool.query(`
+                SELECT g.code, g.category, u.name as creator_name, g.word, g.max_guesses
+                FROM games g JOIN users u ON g.creator_id = u.telegram_id
+                WHERE g.status = 'waiting'
+            `);
+            
+            const waitingGames = result.rows.map(game => ({
+                code: game.code,
+                category: game.category,
+                creatorName: game.creator_name,
+                wordLength: game.word.length,
+                maxGuesses: game.max_guesses
+            }));
+            
+            socket.emit('waiting_games_list', waitingGames);
+        } catch (error) {
+            console.error('❌ خطای دریافت لیست بازی‌ها:', error);
+            socket.emit('game_error', { message: 'خطا در دریافت لیست بازی‌ها.' });
+        }
+    });
+
+    // --- (۴) پیوستن به بازی ---
+    socket.on('join_game', async ({ userId, gameCode }) => {
+        try {
+            const gameResult = await pool.query(
+                'SELECT * FROM games WHERE code = $1 AND status = $2', 
+                [gameCode, 'waiting']
+            );
+            const game = gameResult.rows[0];
+
+            if (!game) {
+                return socket.emit('game_error', { message: 'بازی پیدا نشد یا قبلاً شروع شده است.' });
+            }
+
+            // بررسی اینکه کاربر سازنده بازی نباشد
+            if (game.creator_id === userId) {
+                return socket.emit('game_error', { message: 'شما سازنده این بازی هستید و نمی‌توانید به آن بپیوندید.' });
+            }
+
+            await pool.query(
+                'UPDATE games SET guesser_id = $1, status = $2, start_time = NOW() WHERE code = $3',
+                [userId, 'in_progress', gameCode]
+            );
+
+            socket.join(gameCode);
+            socket.emit('game_joined', { code: gameCode });
+            
+            await emitGameState(gameCode);
+            
+            console.log(`🔗 کاربر ${userId} به بازی ${gameCode} پیوست.`);
+            
+        } catch (error) {
+            console.error('❌ خطای پیوستن به بازی:', error);
+            socket.emit('game_error', { message: 'خطا در پیوستن به بازی.' });
+        }
     });
     
-    // فرم‌های ایجاد بازی
-    document.getElementById('submitCreateGame').addEventListener('click', createGame);
-    document.getElementById('submitJoinGame').addEventListener('click', () => {
-        const gameCode = document.getElementById('gameCodeInput').value.trim();
-        joinGame(gameCode);
+    // --- (۵) مدیریت بازی (حدس زدن) ---
+    socket.on('submit_guess', async ({ userId, gameCode, letter }) => {
+        try {
+            const gameResult = await pool.query('SELECT * FROM games WHERE code = $1 AND status = $2', [gameCode, 'in_progress']);
+            const game = gameResult.rows[0];
+            
+            if (!game || game.guesser_id !== userId) {
+                return socket.emit('game_error', { message: 'شما مجاز به حدس زدن در این بازی نیستید.' });
+            }
+            
+            const normalizedLetter = letter.trim().toLowerCase();
+            
+            if (normalizedLetter.length !== 1 || !/^[\u0600-\u06FF]$/.test(normalizedLetter)) {
+                return socket.emit('game_error', { message: 'لطفا فقط یک حرف فارسی وارد کنید.' });
+            }
+            
+            if (game.guessed_letters.includes(normalizedLetter)) {
+                io.to(gameCode).emit('message', { 
+                    type: 'warning', 
+                    text: `⚠️ حرف "${normalizedLetter}" قبلاً حدس زده شده است.` 
+                });
+                return;
+            }
+
+            let isCorrect = false;
+            let newRevealed = { ...game.revealed_letters };
+            let indices = [];
+            
+            // پیدا کردن تمام موقعیت‌های حرف در کلمه (با نادیده گرفتن فاصله‌ها)
+            for (let i = 0; i < game.word.length; i++) {
+                if (game.word[i] === normalizedLetter) {
+                    indices.push(i);
+                }
+            }
+            
+            if (indices.length > 0) {
+                isCorrect = true;
+                newRevealed[normalizedLetter] = indices;
+            }
+
+            const newGuessesLeft = game.guesses_left - 1;
+            const newCorrectGuesses = game.correct_guesses + (isCorrect ? indices.length : 0);
+            const newIncorrectGuesses = game.incorrect_guesses + (isCorrect ? 0 : 1);
+            
+            let gameStatus = 'in_progress';
+            let winnerId = null;
+            let pointsGained = 0;
+            
+            // به‌روزرسانی وضعیت در دیتابیس
+            await pool.query(
+                `UPDATE games SET 
+                guesses_left = $1, 
+                correct_guesses = $2, 
+                incorrect_guesses = $3, 
+                revealed_letters = $4,
+                guessed_letters = array_append(guessed_letters, $5)
+                WHERE code = $6`,
+                [newGuessesLeft, newCorrectGuesses, newIncorrectGuesses, newRevealed, normalizedLetter, gameCode]
+            );
+
+            // ارسال پیام به هر دو کاربر
+            const messageType = isCorrect ? 'success' : 'error';
+            io.to(gameCode).emit('message', { 
+                type: messageType, 
+                text: `${currentUserName} حدس زد: "${normalizedLetter}" - ${isCorrect ? '✅ درست' : '❌ غلط'}` 
+            });
+
+            // بررسی پایان بازی
+            const allLetters = Array.from(new Set(game.word.replace(/\s/g, '').split('')));
+            const revealedCount = Object.values(newRevealed).flat().length;
+
+            if (revealedCount === game.word.replace(/\s/g, '').length) {
+                gameStatus = 'finished';
+                winnerId = userId;
+                
+                const timeTaken = (Date.now() - new Date(game.start_time).getTime()) / 1000;
+                
+                pointsGained = Math.max(10, Math.floor(
+                    1000 - (10 * newIncorrectGuesses) - (timeTaken) + (50 * game.word.replace(/\s/g, '').length)
+                ));
+                
+                await pool.query(
+                    'UPDATE games SET status = $1, end_time = NOW(), winner_id = $2 WHERE code = $3',
+                    [gameStatus, winnerId, gameCode]
+                );
+                await updateScoreAndEmitLeaderboard(winnerId, pointsGained);
+            } else if (newGuessesLeft <= 0) {
+                gameStatus = 'finished';
+                pointsGained = -5;
+                winnerId = null;
+                
+                await pool.query(
+                    'UPDATE games SET status = $1, end_time = NOW() WHERE code = $2',
+                    [gameStatus, gameCode]
+                );
+                await updateScoreAndEmitLeaderboard(userId, pointsGained);
+            }
+
+            // ارسال به‌روزرسانی نهایی یا مرحله‌ای
+            if (gameStatus === 'finished') {
+                io.to(gameCode).emit('game_finished', { 
+                    winnerName: winnerId ? currentUserName : 'هیچکس', 
+                    points: pointsGained,
+                    word: game.word
+                });
+            }
+            
+            await emitGameState(gameCode);
+
+        } catch (error) {
+            console.error('❌ خطای حدس زدن:', error);
+            socket.emit('game_error', { message: 'خطا در پردازش حدس.' });
+        }
     });
     
-    // فرم‌های لیگ
-    document.getElementById('submitCreateLeague').addEventListener('click', createLeague);
-    document.getElementById('submitJoinLeague').addEventListener('click', joinLeague);
-    document.getElementById('startLeagueBtn').addEventListener('click', startLeague);
-    
-    // مدیریت بازی
-    document.getElementById('submitGuessBtn').addEventListener('click', submitGuess);
-    document.getElementById('hintBtn').addEventListener('click', requestHint);
-    document.getElementById('leagueGuessInput').addEventListener('keypress', function(e) {
-        if (e.key === 'Enter') submitLeagueGuess();
+    // --- (۶) راهنمایی (Hint) ---
+    socket.on('request_hint', async ({ userId, gameCode, letterPosition }) => {
+        try {
+            const gameResult = await pool.query('SELECT * FROM games WHERE code = $1 AND status = $2', [gameCode, 'in_progress']);
+            const game = gameResult.rows[0];
+
+            if (!game || game.guesser_id !== userId) {
+                return socket.emit('game_error', { message: 'شما مجاز به درخواست راهنمایی در این بازی نیستید.' });
+            }
+            
+            const requestedIndex = parseInt(letterPosition);
+            if (requestedIndex < 0 || requestedIndex >= game.word.length || isNaN(requestedIndex)) {
+                return socket.emit('game_error', { message: 'موقعیت حرف نامعتبر است.' });
+            }
+            
+            const letter = game.word[requestedIndex];
+            
+            // بررسی اینکه آیا حرف قبلاً حدس زده شده
+            if (game.revealed_letters[letter] && game.revealed_letters[letter].includes(requestedIndex)) {
+                return socket.emit('game_error', { message: 'این حرف قبلاً حدس زده شده است.' });
+            }
+            
+            // کسر ۲ امتیاز برای راهنمایی
+            const pointsCost = 2;
+            await pool.query('UPDATE users SET score = score - $1 WHERE telegram_id = $2 AND score >= $1', [pointsCost, userId]);
+            
+            // افزودن حرف به حروف حدس‌زده‌شده
+            const newRevealed = { ...game.revealed_letters };
+            if (!newRevealed[letter]) {
+                newRevealed[letter] = [];
+            }
+            newRevealed[letter].push(requestedIndex);
+            
+            await pool.query(
+                'UPDATE games SET revealed_letters = $1 WHERE code = $2',
+                [newRevealed, gameCode]
+            );
+            
+            io.to(gameCode).emit('message', { 
+                type: 'info', 
+                text: `💡 ${currentUserName} از راهنمایی استفاده کرد و حرف "${letter}" در موقعیت ${requestedIndex + 1} را دریافت کرد.` 
+            });
+            
+            await emitGameState(gameCode);
+            await emitLeaderboard();
+            
+        } catch (error) {
+            console.error('❌ خطای درخواست راهنمایی:', error);
+            socket.emit('game_error', { message: 'خطا در پردازش درخواست راهنمایی.' });
+        }
     });
-    document.getElementById('guessInput').addEventListener('keypress', function(e) {
-        if (e.key === 'Enter') submitGuess();
+
+    // --- (۷) مدیریت لیگ ---
+    socket.on('create_league', async ({ userId }) => {
+        try {
+            const leagueCode = generateGameCode();
+            
+            await pool.query(`
+                INSERT INTO leagues (code, status, total_words) 
+                VALUES ($1, 'waiting', 10)
+            `, [leagueCode]);
+            
+            const leagueResult = await pool.query('SELECT id FROM leagues WHERE code = $1', [leagueCode]);
+            const leagueId = leagueResult.rows[0].id;
+            
+            await pool.query(`
+                INSERT INTO league_players (league_id, user_id, score, correct_words, total_time)
+                VALUES ($1, $2, 0, 0, 0)
+            `, [leagueId, userId]);
+            
+            socket.join(leagueCode);
+            socket.emit('league_created', { code: leagueCode });
+            console.log(`🏆 لیگ جدید ایجاد شد: ${leagueCode} توسط ${userId}`);
+            
+            await emitLeagueState(leagueCode);
+            
+        } catch (error) {
+            console.error('❌ خطای ایجاد لیگ:', error);
+            socket.emit('league_error', { message: 'خطا در ایجاد لیگ.' });
+        }
     });
-    
-    // دکمه‌های بازگشت
-    document.querySelectorAll('.back-btn').forEach(btn => {
-        btn.addEventListener('click', () => showScreen('mainMenu'));
+
+    socket.on('join_league', async ({ userId, leagueCode }) => {
+        try {
+            const leagueResult = await pool.query('SELECT * FROM leagues WHERE code = $1 AND status = $1', [leagueCode, 'waiting']);
+            const league = leagueResult.rows[0];
+            
+            if (!league) {
+                return socket.emit('league_error', { message: 'لیگ پیدا نشد یا قبلاً شروع شده است.' });
+            }
+            
+            // بررسی اینکه کاربر قبلاً عضو لیگ نباشد
+            const existingPlayer = await pool.query(`
+                SELECT * FROM league_players 
+                WHERE league_id = $1 AND user_id = $2
+            `, [league.id, userId]);
+            
+            if (existingPlayer.rows.length > 0) {
+                return socket.emit('league_error', { message: 'شما قبلاً در این لیگ عضو شده‌اید.' });
+            }
+            
+            await pool.query(`
+                INSERT INTO league_players (league_id, user_id, score, correct_words, total_time)
+                VALUES ($1, $2, 0, 0, 0)
+            `, [league.id, userId]);
+            
+            socket.join(leagueCode);
+            socket.emit('league_joined', { code: leagueCode });
+            
+            console.log(`🔗 کاربر ${userId} به لیگ ${leagueCode} پیوست.`);
+            
+            await emitLeagueState(leagueCode);
+            
+        } catch (error) {
+            console.error('❌ خطای پیوستن به لیگ:', error);
+            socket.emit('league_error', { message: 'خطا در پیوستن به لیگ.' });
+        }
+    });
+
+    socket.on('start_league', async ({ userId, leagueCode }) => {
+        try {
+            const leagueResult = await pool.query('SELECT * FROM leagues WHERE code = $1', [leagueCode]);
+            const league = leagueResult.rows[0];
+            
+            if (!league) {
+                return socket.emit('league_error', { message: 'لیگ پیدا نشد.' });
+            }
+            
+            // بررسی اینکه کاربر سازنده لیگ باشد
+            const creatorCheck = await pool.query(`
+                SELECT * FROM league_players 
+                WHERE league_id = $1 AND user_id = $2
+            `, [league.id, userId]);
+            
+            if (creatorCheck.rows.length === 0) {
+                return socket.emit('league_error', { message: 'فقط سازنده لیگ می‌تواند آن را شروع کند.' });
+            }
+            
+            // بررسی حداقل تعداد بازیکنان
+            const playerCountResult = await pool.query(`
+                SELECT COUNT(*) FROM league_players WHERE league_id = $1
+            `, [league.id]);
+            
+            const playerCount = parseInt(playerCountResult.rows[0].count);
+            
+            if (playerCount < 2) {
+                return socket.emit('league_error', { message: 'برای شروع لیگ حداقل ۲ بازیکن نیاز است.' });
+            }
+            
+            await startLeague(leagueCode);
+            
+        } catch (error) {
+            console.error('❌ خطای شروع لیگ:', error);
+            socket.emit('league_error', { message: 'خطا در شروع لیگ.' });
+        }
+    });
+
+    socket.on('submit_league_guess', async ({ userId, leagueCode, letter }) => {
+        try {
+            const leagueResult = await pool.query('SELECT * FROM leagues WHERE code = $1 AND status = $1', [leagueCode, 'in_progress']);
+            const league = leagueResult.rows[0];
+            
+            if (!league) {
+                return socket.emit('league_error', { message: 'لیگ فعال پیدا نشد.' });
+            }
+            
+            const currentWordResult = await pool.query(`
+                SELECT * FROM league_player_words 
+                WHERE league_id = $1 AND user_id = $2 AND word_number = $3 AND status = 'in_progress'
+            `, [league.id, userId, league.current_word_number]);
+            
+            if (currentWordResult.rows.length === 0) {
+                return socket.emit('league_error', { message: 'کلمه فعال پیدا نشد.' });
+            }
+            
+            const currentWord = currentWordResult.rows[0];
+            const normalizedLetter = letter.trim().toLowerCase();
+            
+            if (normalizedLetter.length !== 1 || !/^[\u0600-\u06FF]$/.test(normalizedLetter)) {
+                return socket.emit('league_error', { message: 'لطفا فقط یک حرف فارسی وارد کنید.' });
+            }
+            
+            if (currentWord.guessed_letters.includes(normalizedLetter)) {
+                return socket.emit('league_error', { message: 'این حرف قبلاً حدس زده شده است.' });
+            }
+
+            let isCorrect = false;
+            let newRevealed = { ...currentWord.revealed_letters };
+            let indices = [];
+            
+            // پیدا کردن تمام موقعیت‌های حرف در کلمه (با نادیده گرفتن فاصله‌ها)
+            for (let i = 0; i < currentWord.word.length; i++) {
+                if (currentWord.word[i] === normalizedLetter) {
+                    indices.push(i);
+                }
+            }
+            
+            if (indices.length > 0) {
+                isCorrect = true;
+                newRevealed[normalizedLetter] = indices;
+            }
+
+            const newGuessesLeft = currentWord.guesses_left - 1;
+            const newCorrectGuesses = currentWord.correct_guesses + (isCorrect ? indices.length : 0);
+            const newIncorrectGuesses = currentWord.incorrect_guesses + (isCorrect ? 0 : 1);
+            
+            let wordStatus = 'in_progress';
+            let scoreEarned = 0;
+            let timeTaken = 0;
+            
+            // به‌روزرسانی وضعیت در دیتابیس
+            await pool.query(`
+                UPDATE league_player_words SET 
+                guesses_left = $1, 
+                correct_guesses = $2, 
+                incorrect_guesses = $3, 
+                revealed_letters = $4,
+                guessed_letters = array_append(guessed_letters, $5)
+                WHERE league_id = $6 AND user_id = $7 AND word_number = $8
+            `, [newGuessesLeft, newCorrectGuesses, newIncorrectGuesses, newRevealed, normalizedLetter, 
+                league.id, userId, league.current_word_number]);
+
+            // بررسی پایان کلمه
+            const allLetters = Array.from(new Set(currentWord.word.replace(/\s/g, '').split('')));
+            const revealedCount = Object.values(newRevealed).flat().length;
+
+            if (revealedCount === currentWord.word.replace(/\s/g, '').length) {
+                wordStatus = 'completed';
+                
+                timeTaken = Math.floor((Date.now() - new Date(currentWord.start_time).getTime()) / 1000);
+                
+                scoreEarned = Math.max(10, Math.floor(
+                    1000 - (10 * newIncorrectGuesses) - (timeTaken) + (50 * currentWord.word.replace(/\s/g, '').length)
+                ));
+                
+                await pool.query(`
+                    UPDATE league_player_words SET 
+                    status = $1, end_time = NOW(), time_taken = $2, score_earned = $3
+                    WHERE league_id = $4 AND user_id = $5 AND word_number = $6
+                `, [wordStatus, timeTaken, scoreEarned, league.id, userId, league.current_word_number]);
+                
+                await pool.query(`
+                    UPDATE league_players SET 
+                    score = score + $1, 
+                    correct_words = correct_words + 1,
+                    total_time = total_time + $2
+                    WHERE league_id = $3 AND user_id = $4
+                `, [scoreEarned, timeTaken, league.id, userId]);
+                
+                // ارسال پیام موفقیت
+                io.to(leagueCode).emit('league_message', {
+                    type: 'success',
+                    text: `🎉 ${currentUserName} کلمه "${currentWord.word}" را با موفقیت حدس زد! (+${scoreEarned} امتیاز)`
+                });
+                
+            } else if (newGuessesLeft <= 0) {
+                wordStatus = 'failed';
+                
+                await pool.query(`
+                    UPDATE league_player_words SET 
+                    status = $1, end_time = NOW()
+                    WHERE league_id = $2 AND user_id = $3 AND word_number = $4
+                `, [wordStatus, league.id, userId, league.current_word_number]);
+                
+                // ارسال پیام شکست
+                io.to(leagueCode).emit('league_message', {
+                    type: 'error',
+                    text: `❌ ${currentUserName} نتوانست کلمه "${currentWord.word}" را حدس بزند.`
+                });
+            }
+
+            // ارسال به‌روزرسانی وضعیت لیگ
+            await emitLeagueState(leagueCode);
+
+            // اگر کلمه تمام شده، بررسی حرکت به کلمه بعدی
+            if (wordStatus === 'completed' || wordStatus === 'failed') {
+                // بررسی اینکه آیا همه بازیکنان این کلمه را تمام کرده‌اند
+                const remainingPlayersResult = await pool.query(`
+                    SELECT COUNT(*) FROM league_player_words
+                    WHERE league_id = $1 AND word_number = $2 AND status = 'in_progress'
+                `, [league.id, league.current_word_number]);
+                
+                const remainingPlayers = parseInt(remainingPlayersResult.rows[0].count);
+                
+                if (remainingPlayers === 0) {
+                    // حرکت به کلمه بعدی
+                    const nextWordNumber = league.current_word_number + 1;
+                    
+                    if (nextWordNumber <= league.total_words) {
+                        setTimeout(() => {
+                            startLeagueWord(leagueCode, nextWordNumber);
+                        }, 3000);
+                    } else {
+                        // پایان لیگ
+                        setTimeout(() => {
+                            endLeague(leagueCode);
+                        }, 5000);
+                    }
+                }
+            }
+            
+        } catch (error) {
+            console.error('❌ خطای حدس زدن در لیگ:', error);
+            socket.emit('league_error', { message: 'خطا در پردازش حدس.' });
+        }
+    });
+
+    // --- (۸) دریافت وضعیت لیگ ---
+    socket.on('get_league_status', async ({ leagueCode }) => {
+        await emitLeagueState(leagueCode);
+    });
+
+    // --- (۹) دریافت جدول رتبه‌بندی ---
+    socket.on('get_leaderboard', async () => {
+        await emitLeaderboard();
+    });
+
+    // --- (۱۰) قطع اتصال ---
+    socket.on('disconnect', () => {
+        console.log(`➖ کاربر قطع شد: ${socket.id} (${currentUserName || 'ناشناس'})`);
     });
 });
 
-// --- استایل‌های CSS ---
-const styles = `
-/* استایل‌های پایه */
-* {
-    box-sizing: border-box;
-    margin: 0;
-    padding: 0;
-    font-family: 'Tahoma', 'Arial', sans-serif;
-}
-
-body {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    color: #333;
-    line-height: 1.6;
-    min-height: 100vh;
-    padding: 10px;
-}
-
-.container {
-    max-width: 400px;
-    margin: 0 auto;
-    background: white;
-    border-radius: 15px;
-    box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-    overflow: hidden;
-}
-
-.screen {
-    display: none;
-    padding: 20px;
-    min-height: 500px;
-}
-
-.screen.active {
-    display: block;
-}
-
-/* هدر */
-.header {
-    text-align: center;
-    margin-bottom: 20px;
-    padding-bottom: 15px;
-    border-bottom: 2px solid #f0f0f0;
-}
-
-.header h1 {
-    color: #4a5568;
-    font-size: 1.5rem;
-    margin-bottom: 5px;
-}
-
-.header p {
-    color: #718096;
-    font-size: 0.9rem;
-}
-
-/* دکمه‌ها */
-.btn {
-    display: block;
-    width: 100%;
-    padding: 12px 20px;
-    margin: 10px 0;
-    border: none;
-    border-radius: 10px;
-    background: linear-gradient(135deg, #667eea, #764ba2);
-    color: white;
-    font-size: 1rem;
-    font-weight: bold;
-    cursor: pointer;
-    transition: all 0.3s ease;
-    text-align: center;
-}
-
-.btn:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 5px 15px rgba(0,0,0,0.2);
-}
-
-.btn:disabled {
-    background: #a0aec0;
-    cursor: not-allowed;
-    transform: none;
-}
-
-.btn-secondary {
-    background: #e2e8f0;
-    color: #4a5568;
-}
-
-.btn-success {
-    background: linear-gradient(135deg, #48bb78, #38a169);
-}
-
-.btn-danger {
-    background: linear-gradient(135deg, #f56565, #e53e3e);
-}
-
-/* فرم‌ها */
-.form-group {
-    margin-bottom: 15px;
-}
-
-.form-group label {
-    display: block;
-    margin-bottom: 5px;
-    color: #4a5568;
-    font-weight: bold;
-}
-
-.form-control {
-    width: 100%;
-    padding: 12px;
-    border: 2px solid #e2e8f0;
-    border-radius: 10px;
-    font-size: 1rem;
-    transition: border-color 0.3s ease;
-}
-
-.form-control:focus {
-    outline: none;
-    border-color: #667eea;
-}
-
-/* نمایش کلمه */
-.word-display {
-    display: flex;
-    justify-content: center;
-    flex-wrap: wrap;
-    gap: 5px;
-    margin: 20px 0;
-    padding: 15px;
-    background: #f7fafc;
-    border-radius: 10px;
-}
-
-.letter {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 35px;
-    height: 45px;
-    font-size: 1.2rem;
-    font-weight: bold;
-    border-bottom: 3px solid #667eea;
-    margin: 0 2px;
-}
-
-.letter.revealed {
-    color: #2d3748;
-}
-
-.letter.hidden {
-    color: #a0aec0;
-}
-
-.space-box {
-    border-bottom: none;
-    width: 20px;
-    background: transparent;
-}
-
-/* پیام‌ها و نوتیفیکیشن‌ها */
-.notification {
-    position: fixed;
-    top: 20px;
-    left: 50%;
-    transform: translateX(-50%);
-    padding: 12px 20px;
-    border-radius: 10px;
-    color: white;
-    font-weight: bold;
-    z-index: 1000;
-    max-width: 90%;
-    text-align: center;
-}
-
-.notification.success {
-    background: linear-gradient(135deg, #48bb78, #38a169);
-}
-
-.notification.error {
-    background: linear-gradient(135deg, #f56565, #e53e3e);
-}
-
-.notification.info {
-    background: linear-gradient(135deg, #4299e1, #3182ce);
-}
-
-.notification.warning {
-    background: linear-gradient(135deg, #ed8936, #dd6b20);
-}
-
-.game-messages {
-    max-height: 150px;
-    overflow-y: auto;
-    margin: 15px 0;
-    padding: 10px;
-    background: #f7fafc;
-    border-radius: 10px;
-    border: 1px solid #e2e8f0;
-}
-
-.game-message {
-    padding: 8px 12px;
-    margin: 5px 0;
-    border-radius: 8px;
-    font-size: 0.9rem;
-}
-
-.game-message.success {
-    background: #c6f6d5;
-    color: #22543d;
-    border-right: 4px solid #48bb78;
-}
-
-.game-message.error {
-    background: #fed7d7;
-    color: #742a2a;
-    border-right: 4px solid #f56565;
-}
-
-.game-message.info {
-    background: #bee3f8;
-    color: #1a365d;
-    border-right: 4px solid #4299e1;
-}
-
-.game-message.warning {
-    background: #feebc8;
-    color: #744210;
-    border-right: 4px solid #ed8936;
-}
-
-/* لیست بازی‌ها و بازیکنان */
-.waiting-games-list,
-.league-players-list {
-    margin: 15px 0;
-}
-
-.waiting-game,
-.league-player {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 12px;
-    margin: 8px 0;
-    background: #f7fafc;
-    border-radius: 10px;
-    border: 1px solid #e2e8f0;
-}
-
-.waiting-game .game-info {
-    flex: 1;
-}
-
-.waiting-game .game-info span {
-    display: block;
-    font-size: 0.8rem;
-    color: #718096;
-    margin-top: 2px;
-}
-
-.league-player {
-    flex-direction: column;
-    align-items: flex-start;
-    position: relative;
-}
-
-.league-player.leader {
-    background: linear-gradient(135deg, #fef5e7, #fed7d7);
-    border-color: #ed8936;
-}
-
-.player-rank {
-    position: absolute;
-    top: 10px;
-    right: 10px;
-    background: #667eea;
-    color: white;
-    width: 25px;
-    height: 25px;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 0.8rem;
-    font-weight: bold;
-}
-
-.league-player.leader .player-rank {
-    background: #ed8936;
-}
-
-.player-name {
-    font-weight: bold;
-    margin-bottom: 5px;
-}
-
-.player-score {
-    font-size: 1.1rem;
-    font-weight: bold;
-    color: #667eea;
-}
-
-.player-stats {
-    font-size: 0.8rem;
-    color: #718096;
-    margin-top: 3px;
-}
-
-/* جدول رتبه‌بندی */
-.leaderboard-player {
-    display: flex;
-    align-items: center;
-    padding: 12px;
-    margin: 8px 0;
-    background: #f7fafc;
-    border-radius: 10px;
-    border: 1px solid #e2e8f0;
-}
-
-.leaderboard-player.top-1 {
-    background: linear-gradient(135deg, #fef5e7, #fed7d7);
-    border-color: #ed8936;
-}
-
-.leaderboard-player.top-2 {
-    background: linear-gradient(135deg, #f0f4ff, #e6fffa);
-    border-color: #4299e1;
-}
-
-.leaderboard-player.top-3 {
-    background: linear-gradient(135deg, #f0fff4, #e6fffa);
-    border-color: #48bb78;
-}
-
-.rank {
-    width: 30px;
-    height: 30px;
-    border-radius: 50%;
-    background: #667eea;
-    color: white;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: bold;
-    margin-left: 10px;
-}
-
-.leaderboard-player.top-1 .rank {
-    background: #ed8936;
-}
-
-.leaderboard-player.top-2 .rank {
-    background: #4299e1;
-}
-
-.leaderboard-player.top-3 .rank {
-    background: #48bb78;
-}
-
-.name {
-    flex: 1;
-    font-weight: bold;
-}
-
-.score {
-    font-weight: bold;
-    color: #667eea;
-}
-
-/* اطلاعات بازی */
-.game-info,
-.league-info {
-    background: #f7fafc;
-    padding: 15px;
-    border-radius: 10px;
-    margin: 15px 0;
-    border: 1px solid #e2e8f0;
-}
-
-.info-row {
-    display: flex;
-    justify-content: space-between;
-    margin: 8px 0;
-    padding: 5px 0;
-    border-bottom: 1px solid #e2e8f0;
-}
-
-.info-row:last-child {
-    border-bottom: none;
-}
-
-.info-label {
-    color: #718096;
-    font-weight: bold;
-}
-
-.info-value {
-    color: #2d3748;
-    font-weight: bold;
-}
-
-/* حالت‌های پاسخگو */
-@media (max-width: 480px) {
-    .container {
-        margin: 5px;
-        border-radius: 10px;
-    }
-    
-    .screen {
-        padding: 15px;
-    }
-    
-    .letter {
-        width: 30px;
-        height: 40px;
-        font-size: 1rem;
-    }
-    
-    .btn {
-        padding: 10px 15px;
-        font-size: 0.9rem;
-    }
-}
-
-/* انیمیشن‌ها */
-@keyframes fadeIn {
-    from { opacity: 0; transform: translateY(10px); }
-    to { opacity: 1; transform: translateY(0); }
-}
-
-.screen.active {
-    animation: fadeIn 0.3s ease;
-}
-
-.letter.revealed {
-    animation: bounceIn 0.5s ease;
-}
-
-@keyframes bounceIn {
-    0% { transform: scale(0.8); opacity: 0; }
-    50% { transform: scale(1.1); }
-    100% { transform: scale(1); opacity: 1; }
-}
-`;
-
-// تزریق استایل‌ها به صفحه
-const styleSheet = document.createElement('style');
-styleSheet.textContent = styles;
-document.head.appendChild(styleSheet);
+// --- راه‌اندازی سرور ---
+setupDatabase().then(() => {
+    server.listen(PORT, () => {
+        console.log(`🚀 سرور در پورت ${PORT} اجرا شد.`);
+    });
+});
