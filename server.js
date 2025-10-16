@@ -68,74 +68,65 @@ function calculateScore({ correctLetters, wrongLetters, timeSeconds, hintsUsed }
   return Math.max(0, raw);
 }
 
+
+ensureTables()
+    .then(() => console.log('✅ Database is ready.'))
+    .catch(err => console.error('❌ Database initialization failed:', err));
+
 // DB table creation on start
 async function ensureTables() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS users (
-      id SERIAL PRIMARY KEY,
-      telegram_id TEXT UNIQUE,
-      first_name TEXT,
-      created_at TIMESTAMP DEFAULT NOW()
-    );
-  `);
+    try {
+        console.log('🧩 Resetting and creating database tables...');
 
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS games (
-      id TEXT PRIMARY KEY,
-      creator_telegram_id TEXT NOT NULL,
-      creator_name TEXT,
-      word TEXT NOT NULL,
-      created_at TIMESTAMP DEFAULT NOW(),
-      status TEXT DEFAULT 'open', -- open, playing, finished, cancelled
-      max_attempts INTEGER,
-      current_turn_telegram_id TEXT,
-      revealed_indices TEXT DEFAULT '[]',
-      guesses_count INTEGER DEFAULT 0,
-      wrong_count INTEGER DEFAULT 0,
-      hints_used INTEGER DEFAULT 0,
-      started_at TIMESTAMP,
-      finished_at TIMESTAMP,
-      winner_telegram_id TEXT,
-      score INTEGER DEFAULT 0
-    );
-  `);
+        // حذف جداول به ترتیب وابستگی (از پایین به بالا)
+        await pool.query(`
+            DROP TABLE IF EXISTS guesses CASCADE;
+            DROP TABLE IF EXISTS players CASCADE;
+            DROP TABLE IF EXISTS games CASCADE;
+        `);
 
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS players (
-      id SERIAL PRIMARY KEY,
-      game_id TEXT REFERENCES games(id) ON DELETE CASCADE,
-      telegram_id TEXT NOT NULL,
-      name TEXT,
-      joined_at TIMESTAMP DEFAULT NOW(),
-      is_creator BOOLEAN DEFAULT false
-    );
-  `);
+        // جدول بازی‌ها
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS games (
+                id SERIAL PRIMARY KEY,
+                creator_id TEXT NOT NULL,
+                creator_name TEXT,
+                word TEXT NOT NULL,
+                status TEXT DEFAULT 'waiting',
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            );
+        `);
 
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS guesses (
-      id SERIAL PRIMARY KEY,
-      game_id TEXT REFERENCES games(id) ON DELETE CASCADE,
-      telegram_id TEXT,
-      guess_time TIMESTAMP DEFAULT NOW(),
-      type TEXT, -- letter or full
-      letter TEXT,
-      correct BOOLEAN,
-      revealed_positions TEXT DEFAULT '[]'
-    );
-  `);
+        // جدول بازیکنان (شرکت‌کنندگان)
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS players (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                username TEXT,
+                game_id INTEGER REFERENCES games(id) ON DELETE CASCADE,
+                score INTEGER DEFAULT 0,
+                joined_at TIMESTAMP DEFAULT NOW()
+            );
+        `);
 
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS events_log (
-      id SERIAL PRIMARY KEY,
-      game_id TEXT,
-      event_time TIMESTAMP DEFAULT NOW(),
-      actor_telegram_id TEXT,
-      type TEXT,
-      payload JSONB
-    );
-  `);
+        // جدول حدس‌ها
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS guesses (
+                id SERIAL PRIMARY KEY,
+                game_id INTEGER REFERENCES games(id) ON DELETE CASCADE,
+                user_id TEXT NOT NULL,
+                letter TEXT NOT NULL,
+                correct BOOLEAN DEFAULT false,
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+        `);
 
-  console.log('DB tables ensured.');
+        console.log('✅ Tables recreated successfully.');
+    } catch (err) {
+        console.error('❌ Error recreating tables:', err);
+        throw err;
+    }
 }
 
 // Helper: send telegram message (safe wrapper)
