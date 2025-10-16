@@ -4,7 +4,7 @@ const { Client } = require('pg');
 const express = require('express');
 const path = require('path');
 
-const token = process.env.TELEGRAM_BOT_TOKEN;
+const token = process.env.TELEGRAM_TOKEN;
 const databaseUrl = process.env.DATABASE_URL;
 const frontendUrl = process.env.FRONTEND_URL || 'https://wordlybot.ct.ws';  // env var برای URL
 const bot = new TelegramBot(token, { polling: false });
