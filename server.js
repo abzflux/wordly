@@ -11,7 +11,7 @@ const TelegramBot = require('node-telegram-bot-api');
 // --- تنظیمات و متغیرهای محیطی ---
 // توجه: در محیط رندر (render.com)، متغیرهای محیطی باید به درستی تنظیم شوند.
 const BOT_TOKEN = '8408419647:AAGuoIwzH-_S0jXWshGs-jz4CCTJgc_tfdQ'; // توکن ربات تلگرام
-const DATABASE_URL = 'postgresql://abzx:mi4zmgjUEWDffu6CDJdamQjPnEERJSjf@dpg-d3ohsgbe5dus73aovnng-a.frankfurt-postgres.render.com/wordlydb_yz6s';
+const DATABASE_URL = 'postgresql://abzx:RsDq7AmdXXj9WOnACP0RTxonFuKIaJki@dpg-d3oj7rmuk2gs73cscc6g-a.frankfurt-postgres.render.com/wordlydb_7vux';
 const FRONTEND_URL = 'https://wordlybot.ct.ws'; // آدرس فرانت اند
 const PORT = process.env.PORT || 3000;
 
