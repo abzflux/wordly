@@ -3,23 +3,30 @@ const http = require('http');
 const { Server } = require('socket.io');
 const { Pool } = require('pg');
 const cors = require('cors');
+const TelegramBot = require('node-telegram-bot-api'); // کتابخانه ربات تلگرام
 
 // --- تنظیمات و متغیرهای محیطی ---
 // توجه: این مقادیر برای اجرای آزمایشی هستند و در محیط واقعی باید از متغیرهای محیطی امن استفاده شوند.
-const BOT_TOKEN = '8408419647:AAGuoIwzH-_S0jXWshGs-jz4CCTJgc_tfdQ'; // توکن ربات تلگرام
+// این توکن فقط برای نمونه است و باید با توکن اصلی شما جایگزین شود
+const BOT_TOKEN = '8408419647:AAGuoIwzH-_S0jXWshGs-jz4CCTJgc_tfdQ'; 
 const DATABASE_URL = 'postgresql://abolfazl:VJKwG2yTJcEwIbjDT6TeNkWDPPTOSZGC@dpg-d3nbq8bipnbc73avlajg-a.frankfurt-postgres.render.com/wordlydb_toki';
-const FRONTEND_URL = 'https://wordlybot.ct.ws'; // آدرس فرانت اند (که مینی‌اپ در آن میزبانی می‌شود)
+// آدرس فرانت اند (که مینی‌اپ در آن میزبانی می‌شود)
+const FRONTEND_URL = 'https://wordlybot.ct.ws'; 
 const PORT = process.env.PORT || 3000;
 const MAX_INCORRECT_GUESSES = 6;
 const HINT_COST = 15;
 const GAME_TIMEOUT_SECONDS = 180; // 3 دقیقه
+
+// --- راه‌اندازی ربات تلگرام ---
+const bot = new TelegramBot(BOT_TOKEN, { polling: true });
+console.log('🤖 ربات تلگرام فعال شد.');
 
 // --- راه‌اندازی دیتابیس PostgreSQL ---
 const pool = new Pool({
     connectionString: DATABASE_URL,
     ssl: {
         require: true,
-        rejectUnauthorized: false // برای سرویس‌هایی مانند Render ممکن است لازم باشد
+        rejectUnauthorized: false 
     }
 });
 
@@ -28,14 +35,44 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
     cors: {
-        origin: FRONTEND_URL, // محدود کردن دسترسی فقط به آدرس فرانت اند
+        origin: FRONTEND_URL, 
         methods: ["GET", "POST"]
     }
 });
 
-// استفاده از CORS برای ریکوئست‌های استاندارد HTTP (اگرچه Socket.io خودش CORS دارد)
 app.use(cors({ origin: FRONTEND_URL }));
 app.use(express.json());
+
+// -------------------------------------------------------------------
+// --- منطق ربات تلگرام ---
+// -------------------------------------------------------------------
+
+// پاسخ به دستور /start یا هر پیام دیگر
+bot.on('message', async (msg) => {
+    const chatId = msg.chat.id;
+    const text = msg.text;
+
+    if (text === '/start' || text.startsWith('/start ')) {
+        const message = "به بازی Wordly Challenge خوش آمدید! برای شروع بازی، مینی‌اپ را باز کنید.";
+        
+        // دکمه‌ای که مینی‌اپ را باز می‌کند
+        const options = {
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        { 
+                            text: '🕹️ شروع بازی', 
+                            web_app: { url: FRONTEND_URL } 
+                        }
+                    ]
+                ]
+            }
+        };
+        
+        bot.sendMessage(chatId, message, options);
+    }
+});
+
 
 // -------------------------------------------------------------------
 // --- توابع کمکی دیتابیس و منطق بازی ---
@@ -58,10 +95,10 @@ async function setupDatabase() {
     try {
         // --- (۱) پاکسازی جداول موجود (درخواست کاربر) ---
         console.log('🔥 پاکسازی جداول...');
-        // استفاده از CASCADE برای حذف ردیف‌هایی که وابستگی دارند
-        await pool.query('DROP TABLE IF EXISTS users CASCADE;');
+        // حذف جداول به ترتیب وابستگی
         await pool.query('DROP TABLE IF EXISTS games CASCADE;');
         await pool.query('DROP TABLE IF EXISTS leaderboard CASCADE;');
+        await pool.query('DROP TABLE IF EXISTS users CASCADE;');
         await pool.query('DROP TABLE IF EXISTS words CASCADE;');
         console.log('✅ پاکسازی جداول با موفقیت انجام شد.');
 
@@ -94,7 +131,7 @@ async function setupDatabase() {
                 opponent_id INTEGER REFERENCES users(id),
                 word VARCHAR(50) NOT NULL,
                 word_length INTEGER NOT NULL,
-                current_guess TEXT DEFAULT '[]'::text, -- JSON array of guessed letters
+                current_guess TEXT DEFAULT '[]'::text, 
                 status VARCHAR(20) DEFAULT 'waiting' CHECK (status IN ('waiting', 'in_progress', 'finished', 'cancelled')),
                 start_time TIMESTAMP WITH TIME ZONE,
                 end_time TIMESTAMP WITH TIME ZONE,
@@ -121,7 +158,7 @@ async function setupDatabase() {
         
         initialWords.forEach(word => {
             insertQuery += `($${valueIndex++}, $${valueIndex++}), `;
-            values.push(word, word.length);
+            values.push(word, Buffer.from(word, 'utf8').length); // استفاده از طول بایت برای سازگاری بهتر
         });
         
         insertQuery = insertQuery.slice(0, -2) + ' ON CONFLICT (word) DO NOTHING;';
@@ -131,8 +168,6 @@ async function setupDatabase() {
 
     } catch (error) {
         console.error('❌ خطای بحرانی در راه‌اندازی پایگاه داده:', error);
-        // توقف برنامه در صورت عدم موفقیت در راه‌اندازی دیتابیس
-        // process.exit(1); 
     }
 }
 
@@ -143,7 +178,6 @@ async function setupDatabase() {
  */
 async function getNewWord() {
     try {
-        // انتخاب تصادفی یک کلمه که کمترین استفاده را داشته است 
         const result = await pool.query(
             'SELECT word FROM words ORDER BY used_count ASC, RANDOM() LIMIT 1'
         );
@@ -155,7 +189,6 @@ async function getNewWord() {
         
         const newWord = result.rows[0].word;
         
-        // افزایش شمارنده استفاده (used_count)
         await pool.query(
             'UPDATE words SET used_count = used_count + 1 WHERE word = $1',
             [newWord]
@@ -187,7 +220,7 @@ async function emitGameState(gameCode) {
     try {
         const gameResult = await pool.query(
             `SELECT 
-                g.code, g.word_length, g.current_guess, g.status, g.incorrect_guesses, g.start_time, g.hint_cost,
+                g.code, g.word, g.word_length, g.current_guess, g.status, g.incorrect_guesses, g.start_time, g.hint_cost,
                 uc.username AS creator_username, uc.telegram_id AS creator_telegram_id, uc.score AS creator_score,
                 uo.username AS opponent_username, uo.telegram_id AS opponent_telegram_id, uo.score AS opponent_score
             FROM games g
@@ -204,9 +237,16 @@ async function emitGameState(gameCode) {
 
         const game = gameResult.rows[0];
         const currentGuesses = JSON.parse(game.current_guess || '[]');
-        const maskedWord = game.status === 'finished' ? game.word : [...game.word].map((char, index) => {
-            return currentGuesses[index] || (index < game.word_length ? '' : null);
-        }).filter(c => c !== null); // اطمینان از حذف خانه های اضافی در صورت خطا
+        
+        // ساخت کلمه ماسک شده
+        const wordChars = [...game.word];
+        const maskedWord = wordChars.map((char, index) => {
+            // نمایش اگر حدس خورده یا فضا باشد
+            if (currentGuesses[index]) return currentGuesses[index];
+            if (char === ' ') return ' ';
+            // اگر بازی تمام شده، کلمه را کامل نشان بده
+            return game.status === 'finished' ? char : ''; 
+        });
 
         // ساخت آبجکت وضعیت برای ارسال به فرانت اند
         const gameState = {
@@ -242,18 +282,21 @@ async function emitGameState(gameCode) {
  */
 async function updateScoreAndEmitLeaderboard(userId, pointsChange) {
     try {
-        // ۱. به‌روزرسانی امتیاز در جدول کاربران و جدول امتیازات
-        const newScore = await pool.query(
+        // ۱. به‌روزرسانی امتیاز در جدول کاربران
+        const newScoreResult = await pool.query(
             'UPDATE users SET score = score + $1 WHERE id = $2 RETURNING score',
             [pointsChange, userId]
         );
+        const newScore = newScoreResult.rows[0].score;
         
+        // ۲. به‌روزرسانی یا درج در جدول امتیازات
         await pool.query(
-            'INSERT INTO leaderboard (user_id, score) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET score = EXCLUDED.score',
-            [userId, newScore.rows[0].score]
+            `INSERT INTO leaderboard (user_id, score) VALUES ($1, $2)
+             ON CONFLICT (user_id) DO UPDATE SET score = $2`,
+            [userId, newScore]
         );
 
-        // ۲. ارسال جدول امتیازات
+        // ۳. ارسال جدول امتیازات
         const leaderboardResult = await pool.query(`
             SELECT u.username, l.score 
             FROM leaderboard l 
@@ -287,15 +330,6 @@ async function emitWaitingGamesList(socket = io) {
 }
 
 // -------------------------------------------------------------------
-// --- API Routes (برای ربات تلگرام) ---
-// -------------------------------------------------------------------
-
-// تست ساده برای بررسی سلامت سرور
-app.get('/', (req, res) => {
-    res.send('Wordly Mini App Backend is running.');
-});
-
-// -------------------------------------------------------------------
 // --- Socket.io Handlers ---
 // -------------------------------------------------------------------
 
@@ -312,15 +346,13 @@ io.on('connection', (socket) => {
             let userResult = await pool.query('SELECT id, username, score FROM users WHERE telegram_id = $1', [telegramId]);
 
             if (userResult.rows.length === 0) {
-                // اگر کاربر جدید است، ایجاد کن
                 userResult = await pool.query(
                     'INSERT INTO users (telegram_id, username) VALUES ($1, $2) RETURNING id, username, score',
                     [telegramId, username]
                 );
             } else if (userResult.rows[0].username !== username) {
-                // اگر نام کاربری تغییر کرده، به‌روزرسانی کن
                 await pool.query('UPDATE users SET username = $1 WHERE telegram_id = $2', [username, telegramId]);
-                currentUserName = username; // به‌روزرسانی نام کاربری فعلی
+                currentUserName = username; 
             }
             
             userId = userResult.rows[0].id;
@@ -346,9 +378,7 @@ io.on('connection', (socket) => {
                 socket.join(gameCode);
                 await emitGameState(gameCode);
             } else {
-                // اگر بازی فعال ندارد، لیست بازی‌ها را ارسال کن
                 emitWaitingGamesList(socket); 
-                // همچنین جدول امتیازات را ارسال کن
                 await updateScoreAndEmitLeaderboard(userId, 0); 
             }
 
@@ -365,7 +395,6 @@ io.on('connection', (socket) => {
             let gameCode;
             let isCodeUnique = false;
 
-            // اطمینان از منحصر به فرد بودن کد بازی
             while (!isCodeUnique) {
                 gameCode = generateGameCode();
                 const existingGame = await pool.query('SELECT code FROM games WHERE code = $1', [gameCode]);
@@ -374,16 +403,17 @@ io.on('connection', (socket) => {
                 }
             }
 
+            // word.length برای کلمات فارسی با توجه به نحوه ذخیره در دیتابیس باید محاسبه شود.
+            // در اینجا از طول رشته جاوااسکریپتی استفاده می‌کنیم که در فرانت‌اند هم همین معیار است.
             await pool.query(
                 `INSERT INTO games (code, creator_id, word, word_length, start_time) 
                  VALUES ($1, $2, $3, $4, NOW())`,
                 [gameCode, userId, newWord, newWord.length, new Date()]
             );
 
-            // جوین شدن به اتاق و ارسال وضعیت
             socket.join(gameCode);
             await emitGameState(gameCode);
-            emitWaitingGamesList(); // به‌روزرسانی لیست برای همه
+            emitWaitingGamesList(); 
 
         } catch (error) {
             console.error('❌ خطای ایجاد بازی:', error);
@@ -395,7 +425,7 @@ io.on('connection', (socket) => {
     socket.on('join_game', async ({ userId, gameCode }) => {
         try {
             const gameResult = await pool.query(
-                'SELECT status, creator_id, word_length FROM games WHERE code = $1',
+                'SELECT status, creator_id, opponent_id FROM games WHERE code = $1',
                 [gameCode]
             );
 
@@ -404,15 +434,14 @@ io.on('connection', (socket) => {
             }
 
             const game = gameResult.rows[0];
+            const isParticipant = game.creator_id == userId || game.opponent_id == userId;
 
-            if (game.creator_id == userId) {
-                 // اگر خود سازنده دوباره وصل شده
+            if (isParticipant) {
                  socket.join(gameCode);
                  return await emitGameState(gameCode);
             }
 
             if (game.status === 'waiting') {
-                // تبدیل وضعیت بازی به 'in_progress' و افزودن حریف
                 await pool.query(
                     `UPDATE games SET opponent_id = $1, status = 'in_progress', start_time = NOW() WHERE code = $2`,
                     [userId, gameCode]
@@ -420,7 +449,7 @@ io.on('connection', (socket) => {
 
                 socket.join(gameCode);
                 await emitGameState(gameCode);
-                emitWaitingGamesList(); // به‌روزرسانی لیست برای همه
+                emitWaitingGamesList(); 
 
             } else {
                 socket.emit('game_error', { message: 'بازی در حال انجام یا تمام شده است.' });
@@ -444,30 +473,34 @@ io.on('connection', (socket) => {
             const currentGuesses = JSON.parse(game.current_guess || '[]');
             const word = game.word;
             const guessChar = guess.trim()[0]; 
+            const wordChars = [...word];
+            const guessedLettersCount = currentGuesses.filter(c => c).length;
 
-            // ۱. بررسی نوبت
-            const isCreatorTurn = (game.incorrect_guesses + currentGuesses.filter(c => c).length) % 2 === 0;
+            // تعیین نوبت
+            const totalMoves = guessedLettersCount + game.incorrect_guesses;
+            const isCreatorTurn = totalMoves % 2 === 0;
             const isMyTurn = isCreatorTurn ? (game.creator_id == userId) : (game.opponent_id == userId);
 
             if (!isMyTurn) {
                 return socket.emit('game_error', { message: 'صبر کن، نوبت حریف است!' });
             }
 
-            // ۲. بررسی تکراری بودن حرف
-            if (currentGuesses.includes(guessChar)) {
-                return socket.emit('guess_result', { isCorrect: false, message: `حرف "${guessChar}" قبلا حدس زده شده است.` });
+            // بررسی تکراری بودن حرف (بین حروف حدس خورده)
+            if (currentGuesses.some(c => c === guessChar)) {
+                 return socket.emit('guess_result', { isCorrect: false, message: `حرف "${guessChar}" قبلا در کلمه مشخص شده است.` });
             }
 
-            // ۳. پردازش حدس
+
             if (word.includes(guessChar)) {
                 // حدس صحیح
                 const newGuesses = [...currentGuesses];
                 let allGuessed = true;
-                for (let i = 0; i < word.length; i++) {
-                    if (word[i] === guessChar) {
+                
+                for (let i = 0; i < wordChars.length; i++) {
+                    if (wordChars[i] === guessChar) {
                         newGuesses[i] = guessChar;
                     }
-                    if (!newGuesses[i] && word[i] !== ' ') { // بررسی اینکه هنوز جای خالی وجود دارد
+                    if (!newGuesses[i] && wordChars[i] !== ' ') {
                         allGuessed = false;
                     }
                 }
@@ -481,14 +514,17 @@ io.on('connection', (socket) => {
                 if (allGuessed) {
                     const now = new Date();
                     const startTime = new Date(game.start_time);
-                    const timeTaken = (now.getTime() - startTime.getTime()) / 1000; // زمان بر حسب ثانیه
+                    const timeTaken = (now.getTime() - startTime.getTime()) / 1000; 
                     const userNameResult = await pool.query('SELECT username FROM users WHERE id = $1', [userId]);
                     const currentUserName = userNameResult.rows[0].username;
 
-                    // محاسبه امتیاز (امتیاز بر اساس سختی کلمه، سرعت و کسر راهنما)
-                    const pointsGained = Math.max(1, Math.floor(
-                        (100 + (10 * word.length)) - (5 * game.incorrect_guesses) - (timeTaken / 10) - game.hint_cost
-                    ));
+                    // محاسبه امتیاز
+                    const baseScore = 100 + (10 * word.length);
+                    const timePenalty = Math.floor(timeTaken / 20); // کسر امتیاز بر اساس زمان (هر ۲۰ ثانیه ۱ امتیاز)
+                    const incorrectPenalty = 5 * game.incorrect_guesses;
+                    const hintPenalty = game.hint_cost;
+
+                    const pointsGained = Math.max(1, baseScore - timePenalty - incorrectPenalty - hintPenalty);
                     
                     await pool.query(
                         'UPDATE games SET status = $1, end_time = NOW(), winner_id = $2 WHERE code = $3',
@@ -514,13 +550,12 @@ io.on('connection', (socket) => {
 
                 // پایان بازی در صورت تعداد حدس غلط بیش از حد
                 if (newIncorrect >= MAX_INCORRECT_GUESSES) {
-                    // بازنده کسی است که حدس غلط را زده
                     const loserId = userId; 
                     const winnerId = (loserId == game.creator_id) ? game.opponent_id : game.creator_id;
                     const winnerResult = await pool.query('SELECT username FROM users WHERE id = $1', [winnerId]);
                     const winnerName = winnerResult.rows[0].username;
 
-                    // امتیاز بازنده کسر و امتیاز برنده افزایش می‌یابد
+                    // کسر امتیاز بازنده (50-) و افزایش امتیاز برنده (50+)
                     await updateScoreAndEmitLeaderboard(loserId, -50); 
                     await updateScoreAndEmitLeaderboard(winnerId, 50);
 
@@ -531,9 +566,9 @@ io.on('connection', (socket) => {
 
                     io.to(gameCode).emit('game_finished', { 
                         winnerName: winnerName, 
-                        points: 50, // امتیاز برنده
+                        points: 50, 
                         word: game.word,
-                        isHangmanWin: true // برنده با مکانیزم آویز (اشتباهات)
+                        isHangmanWin: true 
                     });
                 }
             }
@@ -562,8 +597,9 @@ io.on('connection', (socket) => {
             const game = gameResult.rows[0];
             const currentGuesses = JSON.parse(game.current_guess || '[]');
             const word = game.word;
+            const wordChars = [...word];
 
-            if (letterPosition < 0 || letterPosition >= word.length) {
+            if (letterPosition < 0 || letterPosition >= wordChars.length) {
                 return socket.emit('game_error', { message: 'موقعیت حرف نامعتبر است.' });
             }
             
@@ -571,38 +607,35 @@ io.on('connection', (socket) => {
             if (currentGuesses[letterPosition]) {
                  return socket.emit('guess_result', { isCorrect: false, message: 'این حرف قبلاً مشخص شده است.' });
             }
-
+            
             // ۲. پیدا کردن حرف
-            const hintChar = word[letterPosition];
+            const hintChar = wordChars[letterPosition];
             
             // ۳. اعمال هزینه
             const newHintCost = game.hint_cost + HINT_COST;
-            await pool.query(
-                'UPDATE games SET hint_cost = $1 WHERE code = $2',
-                [newHintCost, gameCode]
-            );
+            
+            // کسر امتیاز از کاربر
+            await updateScoreAndEmitLeaderboard(userId, -HINT_COST);
             
             // ۴. نمایش حرف در تمام موقعیت‌هایش (مانند حدس صحیح)
             const newGuesses = [...currentGuesses];
             let allGuessed = true;
-            for (let i = 0; i < word.length; i++) {
-                if (word[i] === hintChar) {
+            for (let i = 0; i < wordChars.length; i++) {
+                if (wordChars[i] === hintChar) {
                     newGuesses[i] = hintChar;
                 }
-                if (!newGuesses[i] && word[i] !== ' ') {
+                if (!newGuesses[i] && wordChars[i] !== ' ') {
                     allGuessed = false;
                 }
             }
 
+            // ۵. به‌روزرسانی وضعیت بازی
             await pool.query(
-                'UPDATE games SET current_guess = $1 WHERE code = $2',
-                [JSON.stringify(newGuesses), gameCode]
+                'UPDATE games SET hint_cost = $1, current_guess = $2 WHERE code = $3',
+                [newHintCost, JSON.stringify(newGuesses), gameCode]
             );
-
-             // کسر امتیاز از کاربر
-            await updateScoreAndEmitLeaderboard(userId, -HINT_COST);
             
-            // اگر بازی تمام شد
+            // ۶. اگر بازی تمام شد
             if (allGuessed) {
                 const now = new Date();
                 const startTime = new Date(game.start_time);
@@ -610,11 +643,17 @@ io.on('connection', (socket) => {
                 const userNameResult = await pool.query('SELECT username FROM users WHERE id = $1', [userId]);
                 const currentUserName = userNameResult.rows[0].username;
 
-                // محاسبه امتیاز با کسر نهایی هزینه راهنما
-                const pointsGained = Math.max(1, Math.floor(
-                    (100 + (10 * word.length)) - (5 * game.incorrect_guesses) - (timeTaken / 10) - newHintCost
-                ));
+                // محاسبه امتیاز
+                const baseScore = 100 + (10 * word.length);
+                const timePenalty = Math.floor(timeTaken / 20); 
+                const incorrectPenalty = 5 * game.incorrect_guesses;
+                const finalHintPenalty = newHintCost; // از NewHintCost استفاده می‌شود چون قبلاً در DB آپدیت شده.
+
+                const pointsGained = Math.max(1, baseScore - timePenalty - incorrectPenalty - finalHintPenalty);
                 
+                // در این حالت امتیاز قبلاً کسر شده (-15) و اینجا فقط امتیاز برد اضافه می‌شود.
+                // در تابع updateScoreAndEmitLeaderboard، این امتیاز نهایی به امتیاز فعلی کاربر اضافه می‌شود.
+
                 await pool.query(
                     'UPDATE games SET status = $1, end_time = NOW(), winner_id = $2 WHERE code = $3',
                     ['finished', userId, gameCode]
