@@ -12,11 +12,11 @@ const app = express();
 app.use(express.json());
 
 // سرو فایل‌های استاتیک mini app
-app.use(express.static(path.join(__dirname, 'public')));
+
 
 // روت اصلی mini app
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public/index.html'));
+  res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 // اتصال به PostgreSQL
