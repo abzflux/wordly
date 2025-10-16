@@ -4,6 +4,7 @@ const { Server } = require('socket.io');
 const { Pool } = require('pg');
 const cors = require('cors');
 const path = require('path');
+const TelegramBot = require('node-telegram-bot-api');
 
 // تنظیمات محیطی
 const BOT_TOKEN = process.env.BOT_TOKEN || '8408419647:AAGuoIwzH-_S0jXWshGs-jz4CCTJgc_tfdQ';
@@ -19,6 +20,16 @@ const pool = new Pool({
         rejectUnauthorized: false
     }
 });
+
+// راه‌اندازی ربات تلگرام
+let bot;
+try {
+    bot = new TelegramBot(BOT_TOKEN, { polling: true });
+    console.log('🤖 ربات تلگرام فعال شد');
+} catch (error) {
+    console.error('❌ خطا در راه‌اندازی ربات تلگرام:', error.message);
+    bot = null;
+}
 
 // راه‌اندازی Express
 const app = express();
@@ -473,13 +484,214 @@ class ChallengeManager {
     }
 }
 
+// --- مدیریت ربات تلگرام ---
+if (bot) {
+    // دستور /start
+    bot.onText(/\/start/, async (msg) => {
+        const chatId = msg.chat.id;
+        const userId = msg.from.id;
+        const name = msg.from.first_name || msg.from.username || 'کاربر ناشناس';
+        const username = msg.from.username;
+
+        try {
+            // ثبت کاربر در دیتابیس
+            const user = await UserManager.findOrCreateUser(userId, {
+                name: name,
+                username: username
+            });
+
+            const welcomeMessage = `🎮 *به Wordly Pro خوش آمدید!*
+
+سلام ${name}!
+
+🤖 *Wordly Pro* - پلتفرم حرفه‌ای بازی کلمه‌سازی
+
+✨ *امکانات اصلی:*
+• 🎯 بازی کلاسیک دو نفره
+• ⚡ چالش‌های روزانه
+• 🏆 جدول رتبه‌بندی
+• 📊 پروفایل شخصی
+• 👥 بازی تیمی
+
+🎲 *نحوه بازی:*
+1. یک کلمه فارسی انتخاب کن
+2. دوستت حروف رو حدس بزنه
+3. امتیاز کسب کن و برنده شو!
+
+برای شروع بازی روی دکمه زیر کلیک کن:`;
+
+            const keyboard = {
+                inline_keyboard: [
+                    [
+                        {
+                            text: '🚀 شروع بازی',
+                            web_app: { url: FRONTEND_URL }
+                        }
+                    ],
+                    [
+                        {
+                            text: '📊 جدول رتبه‌بندی',
+                            callback_data: 'leaderboard'
+                        },
+                        {
+                            text: '❓ راهنما',
+                            callback_data: 'help'
+                        }
+                    ]
+                ]
+            };
+
+            await bot.sendMessage(chatId, welcomeMessage, {
+                reply_markup: keyboard,
+                parse_mode: 'Markdown'
+            });
+
+            console.log(`🤖 ربات به کاربر ${userId} پاسخ /start داد`);
+
+        } catch (error) {
+            console.error('❌ خطا در پردازش /start:', error);
+            await bot.sendMessage(chatId, 'متأسفانه خطایی رخ داده است. لطفاً دوباره تلاش کنید.');
+        }
+    });
+
+    // دستور /stats
+    bot.onText(/\/stats/, async (msg) => {
+        const chatId = msg.chat.id;
+        const userId = msg.from.id;
+
+        try {
+            const user = await UserManager.getUserProfile(userId);
+            if (!user) {
+                return await bot.sendMessage(chatId, 'اول باید با دستور /start ثبت نام کنید.');
+            }
+
+            const statsMessage = `📊 *آمار شما*
+
+👤 نام: ${user.name}
+🏆 سطح: ${user.level}
+⭐ امتیاز: ${user.score}
+🎮 بازی‌های انجام شده: ${user.games_played}
+✅ بازی‌های برده: ${user.games_won}
+🎯 حدس‌های درست: ${user.correct_guesses}
+
+💪 ادامه بده!`;
+
+            await bot.sendMessage(chatId, statsMessage, {
+                parse_mode: 'Markdown'
+            });
+
+        } catch (error) {
+            console.error('❌ خطا در پردازش /stats:', error);
+            await bot.sendMessage(chatId, 'خطا در دریافت آمار.');
+        }
+    });
+
+    // دستور /leaderboard
+    bot.onText(/\/leaderboard/, async (msg) => {
+        const chatId = msg.chat.id;
+
+        try {
+            const leaderboard = await UserManager.getLeaderboard(10);
+            
+            let leaderboardMessage = `🏆 *جدول رتبه‌بندی برتر*\n\n`;
+            
+            leaderboard.forEach((user, index) => {
+                const medal = index === 0 ? '🥇' : 
+                            index === 1 ? '🥈' : 
+                            index === 2 ? '🥉' : '▫️';
+                leaderboardMessage += `${medal} *${user.name}*\n`;
+                leaderboardMessage += `   سطح ${user.level} | ${user.score} امتیاز\n`;
+                leaderboardMessage += `   ${user.games_played} بازی | ${user.games_won} برد\n\n`;
+            });
+
+            await bot.sendMessage(chatId, leaderboardMessage, {
+                parse_mode: 'Markdown'
+            });
+
+        } catch (error) {
+            console.error('❌ خطا در پردازش /leaderboard:', error);
+            await bot.sendMessage(chatId, 'خطا در دریافت جدول رتبه‌بندی.');
+        }
+    });
+
+    // مدیریت callback queries
+    bot.on('callback_query', async (callbackQuery) => {
+        const chatId = callbackQuery.message.chat.id;
+        const data = callbackQuery.data;
+
+        try {
+            if (data === 'leaderboard') {
+                const leaderboard = await UserManager.getLeaderboard(5);
+                
+                let leaderboardMessage = `🏆 *۵ نفر برتر*\n\n`;
+                
+                leaderboard.forEach((user, index) => {
+                    const medal = index === 0 ? '🥇' : 
+                                index === 1 ? '🥈' : 
+                                index === 2 ? '🥉' : '▫️';
+                    leaderboardMessage += `${medal} ${user.name}\n`;
+                    leaderboardMessage += `   ${user.score} امتیاز | سطح ${user.level}\n\n`;
+                });
+
+                await bot.sendMessage(chatId, leaderboardMessage, {
+                    parse_mode: 'Markdown'
+                });
+
+            } else if (data === 'help') {
+                const helpMessage = `🎮 *راهنمای بازی Wordly Pro*
+
+*نحوه بازی:*
+1. یک کلمه فارسی انتخاب کن (حداقل ۳ حرف)
+2. دوستت باید حروف رو حدس بزنه
+3. برای هر حرف درست امتیاز می‌گیری
+4. اگر کلمه کامل حدس زده شد برنده می‌شی
+
+*قوانین:*
+• فقط حروف فارسی مجاز است
+• هر بازی زمان محدود دارد
+• امتیاز بر اساس سرعت و دقت محاسبه می‌شود
+
+*دستورات ربات:*
+/start - شروع کار با ربات
+/stats - مشاهده آمار شخصی
+/leaderboard - جدول رتبه‌بندی
+
+*نکته:* برای تجربه کامل بازی، روی "شروع بازی" کلیک کن!`;
+
+                await bot.sendMessage(chatId, helpMessage, {
+                    parse_mode: 'Markdown'
+                });
+            }
+
+            // پاسخ به callback
+            await bot.answerCallbackQuery(callbackQuery.id);
+
+        } catch (error) {
+            console.error('❌ خطا در پردازش callback:', error);
+            await bot.answerCallbackQuery(callbackQuery.id, {
+                text: 'خطا در پردازش درخواست'
+            });
+        }
+    });
+
+    // مدیریت خطاهای ربات
+    bot.on('error', (error) => {
+        console.error('❌ خطای ربات تلگرام:', error);
+    });
+
+    console.log('✅ ربات تلگرام راه‌اندازی شد');
+} else {
+    console.log('⚠️ ربات تلگرام غیرفعال است');
+}
+
 // --- routes پایه ---
 app.get('/', (req, res) => {
     res.json({
         message: 'Wordly Pro Server',
         version: '1.0.0',
         status: 'running',
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        bot: bot ? 'active' : 'inactive'
     });
 });
 
@@ -487,6 +699,7 @@ app.get('/health', (req, res) => {
     res.json({ 
         status: 'OK', 
         database: 'connected',
+        bot: bot ? 'active' : 'inactive',
         timestamp: new Date().toISOString() 
     });
 });
@@ -678,6 +891,7 @@ async function startServer() {
             console.log(`🚀 سرور روی پورت ${PORT} در حال اجراست`);
             console.log(`🌐 آدرس: http://localhost:${PORT}`);
             console.log(`📊 وضعیت: http://localhost:${PORT}/health`);
+            console.log(`🤖 ربات: ${bot ? 'فعال' : 'غیرفعال'}`);
         });
     } catch (error) {
         console.error('❌ خطای راه‌اندازی سرور:', error);
