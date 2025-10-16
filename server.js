@@ -40,44 +40,6 @@ const leagueWords = {
     "رنگ‌ها": ["قرمز", "نارنجی", "زرد", "سبز", "آبی", "نیلی", "بنفش", "صورتی", "قهوه‌ای", "مشکی", "سفید", "خاکستری", "نقره‌ای", "طلایی", "برنزی", "نقره", "طلا", "مس", "برنج", "آهن"]
 };
 
-// --- منطق ربات تلگرام ---
-bot.onText(/\/start/, async (msg) => {
-    const chatId = msg.chat.id;
-    const userId = msg.from.id;
-    const name = msg.from.first_name || msg.from.username || 'کاربر ناشناس';
-
-    try {
-        await pool.query(
-            `INSERT INTO users (telegram_id, name) VALUES ($1, $2)
-            ON CONFLICT (telegram_id) DO UPDATE SET name = EXCLUDED.name`,
-            [userId.toString(), name]
-        );
-        
-        const welcomeMessage = `سلام ${name}، به بازی Wordly خوش آمدید! 🤖`;
-        const inlineKeyboard = {
-            inline_keyboard: [
-                [
-                    {
-                        text: 'شروع بازی (Mini App)',
-                        web_app: { url: FRONTEND_URL }
-                    }
-                ]
-            ]
-        };
-
-        bot.sendMessage(chatId, welcomeMessage, { 
-            reply_markup: inlineKeyboard
-        });
-
-        bot.sendMessage(chatId, `کد کاربری شما: ${userId}`);
-        console.log(`🤖 ربات به کاربر ${userId} پاسخ /start داد.`);
-        
-    } catch (error) {
-        console.error('❌ خطای پردازش فرمان /start:', error);
-        bot.sendMessage(chatId, 'خطایی در ثبت‌نام شما در دیتابیس رخ داد. لطفا دوباره تلاش کنید.');
-    }
-});
-
 // --- توابع کمکی ---
 function generateGameCode() {
     return Math.random().toString(36).substring(2, 6).toUpperCase();
@@ -236,6 +198,7 @@ async function emitGameState(gameCode) {
                 guesser = (await pool.query('SELECT telegram_id, name, score FROM users WHERE telegram_id = $1', [game.guesser_id])).rows[0];
             }
 
+            // ساخت وضعیت بازی برای ارسال
             const gameState = {
                 code: game.code,
                 status: game.status,
@@ -245,18 +208,23 @@ async function emitGameState(gameCode) {
                 guessesLeft: game.guesses_left,
                 correctGuesses: game.correct_guesses,
                 incorrectGuesses: game.incorrect_guesses,
-                revealedLetters: game.revealed_letters,
-                guessedLetters: game.guessed_letters,
+                revealedLetters: game.revealed_letters || {},
+                guessedLetters: game.guessed_letters || [],
                 startTime: game.start_time,
                 creator: creator,
                 guesser: guesser,
-                // کلمه اصلی فقط برای بازی‌های تمام شده یا لغو شده ارسال می‌شود.
+                // ارسال کلمه فقط در صورت پایان بازی
                 word: (game.status === 'finished' || game.status === 'cancelled') ? game.word : null
             };
             
-            // وضعیت کامل بازی را فقط به اتاق بازی ارسال کنید
+            console.log(`📡 ارسال وضعیت بازی ${gameCode}:`, {
+                status: gameState.status,
+                guessesLeft: gameState.guessesLeft,
+                revealedLetters: Object.keys(gameState.revealedLetters).length
+            });
+            
+            // ارسال وضعیت به اتاق بازی
             io.to(gameCode).emit('game_update', gameState);
-            console.log(`📡 وضعیت جدید بازی ${gameCode} ارسال شد. وضعیت: ${game.status}`);
         } else {
             io.to(gameCode).emit('game_error', { message: 'بازی مورد نظر یافت نشد.' });
         }
@@ -266,7 +234,6 @@ async function emitGameState(gameCode) {
 }
 
 async function updateScoreAndEmitLeaderboard(userId, points) {
-    // اطمینان از اینکه فقط در صورتی که userId وجود داشته باشد، عملیات انجام شود
     if (!userId) return; 
 
     try {
@@ -305,30 +272,30 @@ async function emitLeagueState(leagueCode) {
 
         const players = playersResult.rows;
 
-        // دریافت وضعیت کلمه فعلی برای هر بازیکن
-        let currentWordState = {};
+        // دریافت وضعیت کلمه فعلی
+        let currentWordInfo = null;
         if (league.status === 'in_progress') {
             const currentWordResult = await pool.query(`
                 SELECT word, category FROM league_words 
-                WHERE league_id = $1 AND word_number = $2
+                WHERE league_id = $1 AND word_number = $2 AND status = 'active'
             `, [league.id, league.current_word_number]);
             
             if (currentWordResult.rows.length > 0) {
-                currentWordState = {
+                currentWordInfo = {
                     word: currentWordResult.rows[0].word,
                     category: currentWordResult.rows[0].category
                 };
-            }
-
-            // دریافت وضعیت کلمه برای کاربران متصل
-            for (const player of players) {
-                const playerWordResult = await pool.query(`
-                    SELECT * FROM league_player_words 
-                    WHERE league_id = $1 AND user_id = $2 AND word_number = $3
-                `, [league.id, player.telegram_id, league.current_word_number]);
                 
-                if (playerWordResult.rows.length > 0) {
-                    player.currentWord = playerWordResult.rows[0];
+                // دریافت وضعیت کلمه برای هر بازیکن
+                for (const player of players) {
+                    const playerWordResult = await pool.query(`
+                        SELECT * FROM league_player_words 
+                        WHERE league_id = $1 AND user_id = $2 AND word_number = $3
+                    `, [league.id, player.telegram_id, league.current_word_number]);
+                    
+                    if (playerWordResult.rows.length > 0) {
+                        player.currentWord = playerWordResult.rows[0];
+                    }
                 }
             }
         }
@@ -340,15 +307,14 @@ async function emitLeagueState(leagueCode) {
             currentWordNumber: league.current_word_number,
             totalWords: league.total_words,
             players: players,
-            currentWord: currentWordState.word,
-            currentCategory: currentWordState.category,
-            playerCount: players.length,
-            currentWordState: currentWordState
+            currentWord: currentWordInfo ? currentWordInfo.word : null,
+            currentCategory: currentWordInfo ? currentWordInfo.category : null,
+            playerCount: players.length
         };
 
         // ارسال به تمام بازیکنان لیگ
         io.to(leagueCode).emit('leagueStatus', leagueState);
-        console.log(`📡 وضعیت جدید لیگ ${leagueCode} ارسال شد. بازیکنان: ${players.length}`);
+        console.log(`📡 وضعیت لیگ ${leagueCode} ارسال شد. وضعیت: ${league.status}, بازیکنان: ${players.length}`);
 
     } catch (error) {
         console.error(`❌ خطای ارسال وضعیت لیگ ${leagueCode}:`, error);
@@ -388,6 +354,23 @@ async function startLeague(leagueCode) {
                 VALUES ($1, $2, $3, $4, $5, $6)
             `, [wordData.league_id, wordData.word_number, wordData.word, wordData.category, 
                 wordData.max_guesses, wordData.status]);
+        }
+
+        // ایجاد رکوردهای کلمات برای بازیکنان
+        const playersResult = await pool.query(`
+            SELECT user_id FROM league_players WHERE league_id = $1
+        `, [league.id]);
+
+        for (const player of playersResult.rows) {
+            await pool.query(`
+                INSERT INTO league_player_words 
+                (league_id, user_id, word_number, word, category, guesses_left, start_time, status)
+                VALUES ($1, $2, $3, $4, $5, $6, NOW(), 'in_progress')
+                ON CONFLICT (league_id, user_id, word_number) DO UPDATE SET
+                    guesses_left = EXCLUDED.guesses_left,
+                    start_time = NOW(),
+                    status = 'in_progress'
+            `, [league.id, player.user_id, 1, words[0].word, words[0].category, words[0].max_guesses]);
         }
 
         // ارسال وضعیت شروع
@@ -446,7 +429,7 @@ async function startLeagueWord(leagueCode, wordNumber) {
             WHERE code = $2
         `, [wordNumber, leagueCode]);
 
-        // ایجاد رکوردهای جدید برای بازیکنان
+        // ایجاد/به‌روزرسانی رکوردهای جدید برای بازیکنان
         const playersResult = await pool.query(`
             SELECT user_id FROM league_players WHERE league_id = $1
         `, [league.id]);
@@ -456,16 +439,27 @@ async function startLeagueWord(leagueCode, wordNumber) {
             WHERE league_id = $1 AND word_number = $2
         `, [league.id, wordNumber]);
 
-        if (currentWordResult.rows.length === 0) return;
+        if (currentWordResult.rows.length === 0) {
+            console.error(`❌ کلمه ${wordNumber} برای لیگ ${leagueCode} یافت نشد.`);
+            return;
+        }
 
         const currentWord = currentWordResult.rows[0];
 
         for (const player of playersResult.rows) {
             await pool.query(`
                 INSERT INTO league_player_words 
-                (league_id, user_id, word_number, word, category, guesses_left, start_time)
-                VALUES ($1, $2, $3, $4, $5, $6, NOW())
-                ON CONFLICT (league_id, user_id, word_number) DO NOTHING
+                (league_id, user_id, word_number, word, category, guesses_left, start_time, status)
+                VALUES ($1, $2, $3, $4, $5, $6, NOW(), 'in_progress')
+                ON CONFLICT (league_id, user_id, word_number) 
+                DO UPDATE SET 
+                    guesses_left = EXCLUDED.guesses_left,
+                    start_time = NOW(),
+                    status = 'in_progress',
+                    revealed_letters = '{}',
+                    guessed_letters = '{}',
+                    correct_guesses = 0,
+                    incorrect_guesses = 0
             `, [league.id, player.user_id, wordNumber, currentWord.word, 
                 currentWord.category, currentWord.max_guesses]);
         }
@@ -556,11 +550,10 @@ io.on('connection', (socket) => {
                 [userId]
             );
 
-            if (activeGamesResult.rows.length > 0) {
-                const gameCode = activeGamesResult.rows[0].code;
-                socket.join(gameCode);
-                console.log(`🔗 کاربر ${userId} به بازی فعال ${gameCode} ملحق شد.`);
-                await emitGameState(gameCode); 
+            for (const game of activeGamesResult.rows) {
+                socket.join(game.code);
+                console.log(`🔗 کاربر ${userId} به بازی فعال ${game.code} ملحق شد.`);
+                await emitGameState(game.code);
             }
 
             // اتصال مجدد به لیگ فعال
@@ -571,11 +564,10 @@ io.on('connection', (socket) => {
                 WHERE lp.user_id = $1 AND l.status IN ('waiting', 'starting', 'in_progress')
             `, [userId]);
 
-            if (activeLeaguesResult.rows.length > 0) {
-                const leagueCode = activeLeaguesResult.rows[0].code;
-                socket.join(leagueCode);
-                console.log(`🔗 کاربر ${userId} به لیگ فعال ${leagueCode} ملحق شد.`);
-                await emitLeagueState(leagueCode);
+            for (const league of activeLeaguesResult.rows) {
+                socket.join(league.code);
+                console.log(`🔗 کاربر ${userId} به لیگ فعال ${league.code} ملحق شد.`);
+                await emitLeagueState(league.code);
             }
 
             socket.emit('login_success', { name, userId });
@@ -596,7 +588,6 @@ io.on('connection', (socket) => {
         try {
             const gameCode = generateGameCode();
             const maxGuesses = Math.ceil(word.length * 1.5);
-            const revealedLetters = {};
             
             // اعتبارسنجی کلمه - اجازه فاصله در کلمه
             if (!/^[\u0600-\u06FF\s]+$/.test(word) || word.replace(/\s/g, '').length < 3) {
@@ -606,7 +597,7 @@ io.on('connection', (socket) => {
             const result = await pool.query(
                 `INSERT INTO games (code, creator_id, word, category, max_guesses, guesses_left, revealed_letters, status)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, 'waiting') RETURNING *`,
-                [gameCode, userId, word, category, maxGuesses, maxGuesses, revealedLetters]
+                [gameCode, userId, word, category, maxGuesses, maxGuesses, {}]
             );
             
             const newGame = result.rows[0];
@@ -672,7 +663,7 @@ io.on('connection', (socket) => {
             socket.join(gameCode);
             socket.emit('game_joined', { code: gameCode });
             
-            // ارسال وضعیت جدید بازی به هر دو بازیکن (سازنده و حدس‌زننده)
+            // ارسال وضعیت جدید بازی به هر دو بازیکن
             await emitGameState(gameCode);
             
             console.log(`🔗 کاربر ${userId} به بازی ${gameCode} پیوست.`);
@@ -722,7 +713,7 @@ io.on('connection', (socket) => {
             socket.join(gameCode);
             socket.emit('game_joined', { code: gameCode });
             
-            // ارسال وضعیت جدید بازی به هر دو بازیکن (سازنده و حدس‌زننده)
+            // ارسال وضعیت جدید بازی
             await emitGameState(gameCode);
             
             console.log(`🔗 کاربر ${userId} به بازی تصادفی ${gameCode} پیوست.`);
@@ -812,7 +803,7 @@ io.on('connection', (socket) => {
             }
 
             let isCorrect = false;
-            let newRevealed = { ...game.revealed_letters };
+            let newRevealed = { ...(game.revealed_letters || {}) };
             let indices = [];
             
             // پیدا کردن تمام موقعیت‌های حرف در کلمه (با نادیده گرفتن فاصله‌ها)
@@ -826,7 +817,10 @@ io.on('connection', (socket) => {
             if (indices.length > 0) {
                 isCorrect = true;
                 // حرف را به لیست حروف آشکار شده اضافه کنید و موقعیت‌های آن را ذخیره کنید
-                newRevealed[normalizedLetter] = [...(newRevealed[normalizedLetter] || []), ...indices];
+                if (!newRevealed[normalizedLetter]) {
+                    newRevealed[normalizedLetter] = [];
+                }
+                newRevealed[normalizedLetter] = [...new Set([...newRevealed[normalizedLetter], ...indices])];
             }
 
             const newGuessesLeft = game.guesses_left - 1;
@@ -895,7 +889,7 @@ io.on('connection', (socket) => {
                  const winnerName = (await pool.query('SELECT name FROM users WHERE telegram_id = $1', [winnerId])).rows[0]?.name || 'نامشخص';
                  io.to(gameCode).emit('game_finished', { 
                     winnerName: winnerName, 
-                    points: winnerId === userId ? pointsGained : 10, // امتیاز برنده (سازنده یا حدس‌زننده)
+                    points: winnerId === userId ? pointsGained : 10,
                     forfeit: false,
                     word: game.word
                 });
@@ -926,9 +920,18 @@ io.on('connection', (socket) => {
             
             const letter = game.word[requestedIndex];
             
+            // بررسی اینکه آیا این حرف فاصله است یا قبلاً حدس زده شده
+            if (letter === ' ') {
+                return socket.emit('game_error', { message: 'این موقعیت مربوط به فاصله است.' });
+            }
+            
             // بررسی اینکه آیا حرف قبلاً حدس زده شده
-            if ((game.revealed_letters[letter] && game.revealed_letters[letter].includes(requestedIndex)) || letter === ' ') {
-                return socket.emit('game_error', { message: 'این حرف قبلاً حدس زده شده یا فاصله است.' });
+            const isAlreadyRevealed = game.revealed_letters && 
+                game.revealed_letters[letter] && 
+                game.revealed_letters[letter].includes(requestedIndex);
+                
+            if (isAlreadyRevealed) {
+                return socket.emit('game_error', { message: 'این حرف قبلاً حدس زده شده است.' });
             }
             
             // کسر ۲ امتیاز برای راهنمایی
@@ -941,7 +944,7 @@ io.on('connection', (socket) => {
             }
 
             // افزودن حرف به حروف آشکار شده
-            const newRevealed = { ...game.revealed_letters };
+            const newRevealed = { ...(game.revealed_letters || {}) };
             if (!newRevealed[letter]) {
                 newRevealed[letter] = [];
             }
@@ -1030,15 +1033,6 @@ io.on('connection', (socket) => {
                     winnerName: winnerName, 
                     points: 10,
                     forfeit: true, // نشان دهنده اعلام باخت
-                    forfeiterName: loserName,
-                    word: game.word // ارسال کلمه برای فاش شدن
-                });
-                
-                // ارسال مستقیم به سوکت بازنده
-                socket.emit('game_finished', { 
-                    winnerName: winnerName, 
-                    points: -5,
-                    forfeit: true,
                     forfeiterName: loserName,
                     word: game.word // ارسال کلمه برای فاش شدن
                 });
@@ -1176,7 +1170,8 @@ io.on('connection', (socket) => {
             `, [league.id, userId, league.current_word_number]);
             
             if (currentWordResult.rows.length === 0) {
-                return socket.emit('league_error', { message: 'کلمه فعال پیدا نشد.' });
+                console.log(`❌ کلمه فعال برای کاربر ${userId} در لیگ ${leagueCode} پیدا نشد.`);
+                return socket.emit('league_error', { message: 'کلمه فعال پیدا نشد. لطفا صفحه را رفرش کنید.' });
             }
             
             const currentWord = currentWordResult.rows[0];
@@ -1191,7 +1186,7 @@ io.on('connection', (socket) => {
             }
 
             let isCorrect = false;
-            let newRevealed = { ...currentWord.revealed_letters };
+            let newRevealed = { ...(currentWord.revealed_letters || {}) };
             let indices = [];
             
             // پیدا کردن تمام موقعیت‌های حرف در کلمه (با نادیده گرفتن فاصله‌ها)
@@ -1203,7 +1198,10 @@ io.on('connection', (socket) => {
             
             if (indices.length > 0) {
                 isCorrect = true;
-                newRevealed[normalizedLetter] = [...(newRevealed[normalizedLetter] || []), ...indices];
+                if (!newRevealed[normalizedLetter]) {
+                    newRevealed[normalizedLetter] = [];
+                }
+                newRevealed[normalizedLetter] = [...new Set([...newRevealed[normalizedLetter], ...indices])];
             }
 
             const newGuessesLeft = currentWord.guesses_left - 1;
@@ -1255,7 +1253,6 @@ io.on('connection', (socket) => {
                 
                 // ارسال پیام موفقیت
                 io.to(leagueCode).emit('league_message', {
-                    type: 'success',
                     text: `🎉 ${currentUserName} کلمه "${currentWord.word}" را با موفقیت حدس زد! (+${scoreEarned} امتیاز)`
                 });
                 
@@ -1270,7 +1267,6 @@ io.on('connection', (socket) => {
                 
                 // ارسال پیام شکست
                 io.to(leagueCode).emit('league_message', {
-                    type: 'error',
                     text: `❌ ${currentUserName} نتوانست کلمه "${currentWord.word}" را حدس بزند.`
                 });
             }
