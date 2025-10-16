@@ -3,7 +3,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const { Client } = require('pg');
 const express = require('express');  // برای سرور webhook
 
-const token = process.env.TELEGRAM_BOT_TOKEN;
+const token = process.env.TELEGRAM_TOKEN;
 const databaseUrl = process.env.DATABASE_URL;
 const bot = new TelegramBot(token, { polling: false });  // webhook mode
 const app = express();
