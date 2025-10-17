@@ -7,7 +7,6 @@ const cors = require('cors');
 // --- Telegram Bot Library ---
 const TelegramBot = require('node-telegram-bot-api');
 
-
 // --- تنظیمات و متغیرهای محیطی ---
 const BOT_TOKEN = '8408419647:AAGuoIwzH-_S0jXWshGs-jz4CCTJgc_tfdQ';
 const DATABASE_URL = 'postgresql://abzx:RsDq7AmdXXj9WOnACP0RTxonFuKIaJki@dpg-d3oj7rmuk2gs73cscc6g-a.frankfurt-postgres.render.com/wordlydb_7vux';
@@ -202,7 +201,6 @@ async function setupDatabase() {
         client.release();
     } catch (err) {
         console.error('❌ خطای راه‌اندازی دیتابیس:', err.message);
-        process.exit(1);
     }
 }
 
@@ -241,7 +239,7 @@ async function emitGameState(gameCode) {
                 code: game.code,
                 status: game.status,
                 category: game.category,
-                wordLength: game.word.length,
+                wordLength: game.word.replace(/\s/g, '').length,
                 maxGuesses: game.max_guesses,
                 guessesLeft: game.guesses_left,
                 correctGuesses: game.correct_guesses,
@@ -602,8 +600,8 @@ io.on('connection', (socket) => {
             const gameCode = generateGameCode();
             const maxGuesses = Math.ceil(word.length * 1.5);
             
-            if (!/^[\u0600-\u06FF\s]+$/.test(word) || word.replace(/\s/g, '').length < 3) {
-                 return socket.emit('game_error', { message: 'کلمه باید فقط شامل حروف فارسی و فاصله باشد و حداقل ۳ حرف داشته باشد.' });
+            if (!/^[\u0600-\u06FF]+$/.test(word) || word.length < 3 || word.includes(' ')) {
+                 return socket.emit('game_error', { message: 'کلمه باید فقط شامل حروف فارسی بدون فاصله باشد و حداقل ۳ حرف داشته باشد.' });
             }
             
             const result = await pool.query(
@@ -637,7 +635,7 @@ io.on('connection', (socket) => {
                 code: game.code,
                 category: game.category,
                 creatorName: game.creator_name,
-                wordLength: game.word.length,
+                wordLength: game.word.replace(/\s/g, '').length,
                 maxGuesses: game.max_guesses
             }));
             
@@ -662,7 +660,11 @@ io.on('connection', (socket) => {
             }
 
             if (game.creator_id === userId) {
-                return socket.emit('game_error', { message: 'شما سازنده این بازی هستید و نمی‌توانید به آن بپیوندید.' });
+                return socket.emit('game_error', { message: 'شما سازنده این بازی هستید و نمی‌توانید به عنوان حدس‌زننده بپیوندید.' });
+            }
+
+            if (game.guesser_id) {
+                return socket.emit('game_error', { message: 'این بازی قبلاً یک حدس‌زننده دارد.' });
             }
 
             await pool.query(
@@ -687,10 +689,8 @@ io.on('connection', (socket) => {
     socket.on('join_random_game', async ({ userId }) => {
         try {
             const randomGameResult = await pool.query(`
-                SELECT g.code 
-                FROM games g 
-                WHERE g.status = 'waiting' 
-                AND g.creator_id != $1 
+                SELECT code FROM games 
+                WHERE status = 'waiting' AND creator_id != $1
                 ORDER BY RANDOM() 
                 LIMIT 1
             `, [userId]);
@@ -886,7 +886,6 @@ io.on('connection', (socket) => {
                  io.to(gameCode).emit('game_finished', { 
                     winnerName: winnerName, 
                     points: winnerId === userId ? pointsGained : 10,
-                    forfeit: false,
                     word: game.word
                 });
             }
