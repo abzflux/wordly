@@ -7,6 +7,7 @@ const cors = require('cors');
 // --- Telegram Bot Library ---
 const TelegramBot = require('node-telegram-bot-api');
 
+
 // --- تنظیمات و متغیرهای محیطی ---
 const BOT_TOKEN = '8408419647:AAGuoIwzH-_S0jXWshGs-jz4CCTJgc_tfdQ';
 const DATABASE_URL = 'postgresql://abzx:RsDq7AmdXXj9WOnACP0RTxonFuKIaJki@dpg-d3oj7rmuk2gs73cscc6g-a.frankfurt-postgres.render.com/wordlydb_7vux';
@@ -201,6 +202,7 @@ async function setupDatabase() {
         client.release();
     } catch (err) {
         console.error('❌ خطای راه‌اندازی دیتابیس:', err.message);
+        process.exit(1);
     }
 }
 
@@ -239,7 +241,7 @@ async function emitGameState(gameCode) {
                 code: game.code,
                 status: game.status,
                 category: game.category,
-                wordLength: game.word.replace(/\s/g, '').length,
+                wordLength: game.word.length,
                 maxGuesses: game.max_guesses,
                 guessesLeft: game.guesses_left,
                 correctGuesses: game.correct_guesses,
@@ -600,8 +602,8 @@ io.on('connection', (socket) => {
             const gameCode = generateGameCode();
             const maxGuesses = Math.ceil(word.length * 1.5);
             
-            if (!/^[\u0600-\u06FF]+$/.test(word) || word.length < 3 || word.includes(' ')) {
-                 return socket.emit('game_error', { message: 'کلمه باید فقط شامل حروف فارسی بدون فاصله باشد و حداقل ۳ حرف داشته باشد.' });
+            if (!/^[\u0600-\u06FF\s]+$/.test(word) || word.replace(/\s/g, '').length < 3) {
+                 return socket.emit('game_error', { message: 'کلمه باید فقط شامل حروف فارسی و فاصله باشد و حداقل ۳ حرف داشته باشد.' });
             }
             
             const result = await pool.query(
@@ -635,7 +637,7 @@ io.on('connection', (socket) => {
                 code: game.code,
                 category: game.category,
                 creatorName: game.creator_name,
-                wordLength: game.word.replace(/\s/g, '').length,
+                wordLength: game.word.length,
                 maxGuesses: game.max_guesses
             }));
             
@@ -660,11 +662,7 @@ io.on('connection', (socket) => {
             }
 
             if (game.creator_id === userId) {
-                return socket.emit('game_error', { message: 'شما سازنده این بازی هستید و نمی‌توانید به عنوان حدس‌زننده بپیوندید.' });
-            }
-
-            if (game.guesser_id) {
-                return socket.emit('game_error', { message: 'این بازی قبلاً یک حدس‌زننده دارد.' });
+                return socket.emit('game_error', { message: 'شما سازنده این بازی هستید و نمی‌توانید به آن بپیوندید.' });
             }
 
             await pool.query(
@@ -689,8 +687,10 @@ io.on('connection', (socket) => {
     socket.on('join_random_game', async ({ userId }) => {
         try {
             const randomGameResult = await pool.query(`
-                SELECT code FROM games 
-                WHERE status = 'waiting' AND creator_id != $1
+                SELECT g.code 
+                FROM games g 
+                WHERE g.status = 'waiting' 
+                AND g.creator_id != $1 
                 ORDER BY RANDOM() 
                 LIMIT 1
             `, [userId]);
@@ -785,118 +785,117 @@ io.on('connection', (socket) => {
     
     // --- (۵) مدیریت بازی (حدس زدن) ---
     socket.on('submit_guess', async ({ userId, gameCode, letter }) => {
-        try {
-            const gameResult = await pool.query('SELECT * FROM games WHERE code = $1 AND status = $2', [gameCode, 'in_progress']);
-            const game = gameResult.rows[0];
-            
-            if (!game || game.guesser_id !== userId) {
-                return socket.emit('game_error', { message: 'شما مجاز به حدس زدن در این بازی نیستید.' });
-            }
-            
-            const normalizedLetter = letter.trim().toLowerCase();
-            
-            if (normalizedLetter.length !== 1 || !/^[\u0600-\u06FF]$/.test(normalizedLetter)) {
-                return socket.emit('game_error', { message: 'لطفا فقط یک حرف فارسی وارد کنید.' });
-            }
-            
-            if (game.guessed_letters.includes(normalizedLetter)) {
-                io.to(gameCode).emit('message', { 
-                    type: 'warning', 
-                    text: `⚠️ حرف "${normalizedLetter}" قبلاً حدس زده شده است.` 
-                });
-                return;
-            }
+		try {
+			const gameResult = await pool.query('SELECT * FROM games WHERE code = $1 AND status = $2', [gameCode, 'in_progress']);
+			const game = gameResult.rows[0];
+			
+			if (!game || game.guesser_id !== userId) {
+				return socket.emit('game_error', { message: 'شما مجاز به حدس زدن در این بازی نیستید.' });
+			}
+			
+			const normalizedLetter = letter.trim().toLowerCase();
+			
+			if (normalizedLetter.length !== 1 || !/^[\u0600-\u06FF]$/.test(normalizedLetter)) {
+				return socket.emit('game_error', { message: 'لطفا فقط یک حرف فارسی وارد کنید.' });
+			}
+			
+			if (game.guessed_letters.includes(normalizedLetter)) {
+				io.to(gameCode).emit('message', { 
+					type: 'warning', 
+					text: `⚠️ حرف "${normalizedLetter}" قبلاً حدس زده شده است.` 
+				});
+				return;
+			}
 
-            let isCorrect = false;
-            let newRevealed = { ...(game.revealed_letters || {}) };
-            let indices = [];
-            
-            for (let i = 0; i < game.word.length; i++) {
-                if (game.word[i] !== ' ' && game.word[i] === normalizedLetter) {
-                    indices.push(i);
-                }
-            }
-            
-            if (indices.length > 0) {
-                isCorrect = true;
-                if (!newRevealed[normalizedLetter]) {
-                    newRevealed[normalizedLetter] = [];
-                }
-                newRevealed[normalizedLetter] = [...new Set([...newRevealed[normalizedLetter], ...indices])];
-            }
+			let isCorrect = false;
+			let newRevealed = { ...game.revealed_letters };
+			let indices = [];
+			
+			
+			for (let i = 0; i < game.word.length; i++) {
+				if (game.word[i] !== ' ' && game.word[i] === normalizedLetter) {
+					indices.push(i);
+				}
+			}
+			
+			if (indices.length > 0) {
+				isCorrect = true;
+				newRevealed[normalizedLetter] = [...(newRevealed[normalizedLetter] || []), ...indices];
+			}
 
-            const newGuessesLeft = game.guesses_left - 1;
-            const newCorrectGuesses = game.correct_guesses + (isCorrect ? indices.length : 0);
-            const newIncorrectGuesses = game.incorrect_guesses + (isCorrect ? 0 : 1);
-            
-            let gameStatus = 'in_progress';
-            let winnerId = null;
-            let pointsGained = 0;
-            
-            await pool.query(
-                `UPDATE games SET 
-                guesses_left = $1, 
-                correct_guesses = $2, 
-                incorrect_guesses = $3, 
-                revealed_letters = $4,
-                guessed_letters = array_append(guessed_letters, $5)
-                WHERE code = $6`,
-                [newGuessesLeft, newCorrectGuesses, newIncorrectGuesses, newRevealed, normalizedLetter, gameCode]
-            );
+			const newGuessesLeft = game.guesses_left - 1;
+			const newCorrectGuesses = game.correct_guesses + (isCorrect ? indices.length : 0);
+			const newIncorrectGuesses = game.incorrect_guesses + (isCorrect ? 0 : 1);
+			
+			let gameStatus = 'in_progress';
+			let winnerId = null;
+			let pointsGained = 0;
+			
+			await pool.query(
+				`UPDATE games SET 
+				guesses_left = $1, 
+				correct_guesses = $2, 
+				incorrect_guesses = $3, 
+				revealed_letters = $4,
+				guessed_letters = array_append(guessed_letters, $5)
+				WHERE code = $6`,
+				[newGuessesLeft, newCorrectGuesses, newIncorrectGuesses, newRevealed, normalizedLetter, gameCode]
+			);
 
-            const messageType = isCorrect ? 'success' : 'error';
-            io.to(gameCode).emit('message', { 
-                type: messageType, 
-                text: `${currentUserName} حدس زد: "${normalizedLetter}" - ${isCorrect ? '✅ درست' : '❌ غلط'}` 
-            });
+			const messageType = isCorrect ? 'success' : 'error';
+			io.to(gameCode).emit('message', { 
+				type: messageType, 
+				text: `${currentUserName} حدس زد: "${normalizedLetter}" - ${isCorrect ? '✅ درست' : '❌ غلط'}` 
+			});
 
-            const wordWithoutSpacesLength = game.word.replace(/\s/g, '').length;
-            const revealedCount = Object.values(newRevealed).flat().length;
+			const wordWithoutSpacesLength = game.word.replace(/\s/g, '').length;
+			const revealedCount = Object.values(newRevealed).flat().length;
 
-            if (revealedCount === wordWithoutSpacesLength) {
-                gameStatus = 'finished';
-                winnerId = userId;
-                
-                const timeTaken = (Date.now() - new Date(game.start_time).getTime()) / 1000;
-                
-                pointsGained = Math.max(10, Math.floor(
-                    1000 - (10 * newIncorrectGuesses) - (timeTaken) + (50 * wordWithoutSpacesLength)
-                ));
-                
-                await pool.query(
-                    'UPDATE games SET status = $1, end_time = NOW(), winner_id = $2 WHERE code = $3',
-                    [gameStatus, winnerId, gameCode]
-                );
-                await updateScoreAndEmitLeaderboard(winnerId, pointsGained);
-            } else if (newGuessesLeft <= 0) {
-                gameStatus = 'finished';
-                pointsGained = -5;
-                winnerId = game.creator_id;
-                
-                await pool.query(
-                    'UPDATE games SET status = $1, end_time = NOW(), winner_id = $2 WHERE code = $3',
-                    [gameStatus, winnerId, gameCode]
-                );
-                await updateScoreAndEmitLeaderboard(userId, pointsGained);
-                await updateScoreAndEmitLeaderboard(winnerId, 10);
-            }
+			if (revealedCount === wordWithoutSpacesLength) {
+				gameStatus = 'finished';
+				winnerId = userId;
+				
+				const timeTaken = (Date.now() - new Date(game.start_time).getTime()) / 1000;
+				
+				pointsGained = Math.max(10, Math.floor(
+					1000 - (10 * newIncorrectGuesses) - (timeTaken) + (50 * wordWithoutSpacesLength)
+				));
+				
+				await pool.query(
+					'UPDATE games SET status = $1, end_time = NOW(), winner_id = $2 WHERE code = $3',
+					[gameStatus, winnerId, gameCode]
+				);
+				await updateScoreAndEmitLeaderboard(winnerId, pointsGained);
+			} else if (newGuessesLeft <= 0) {
+				gameStatus = 'finished';
+				pointsGained = -5;
+				winnerId = game.creator_id;
+				
+				await pool.query(
+					'UPDATE games SET status = $1, end_time = NOW(), winner_id = $2 WHERE code = $3',
+					[gameStatus, winnerId, gameCode]
+				);
+				await updateScoreAndEmitLeaderboard(userId, pointsGained);
+				await updateScoreAndEmitLeaderboard(winnerId, 10);
+			}
 
-            if (gameStatus === 'finished') {
-                 const winnerName = (await pool.query('SELECT name FROM users WHERE telegram_id = $1', [winnerId])).rows[0]?.name || 'نامشخص';
-                 io.to(gameCode).emit('game_finished', { 
-                    winnerName: winnerName, 
-                    points: winnerId === userId ? pointsGained : 10,
-                    word: game.word
-                });
-            }
-            
-            await emitGameState(gameCode);
+			if (gameStatus === 'finished') {
+				 const winnerName = (await pool.query('SELECT name FROM users WHERE telegram_id = $1', [winnerId])).rows[0]?.name || 'نامشخص';
+				 io.to(gameCode).emit('game_finished', { 
+					winnerName: winnerName, 
+					points: winnerId === userId ? pointsGained : 10,
+					forfeit: false,
+					word: game.word
+				});
+			}
+			
+			await emitGameState(gameCode);
 
-        } catch (error) {
-            console.error('❌ خطای حدس زدن:', error);
-            socket.emit('game_error', { message: 'خطا در پردازش حدس.' });
-        }
-    });
+		} catch (error) {
+			console.error('❌ خطای حدس زدن:', error);
+			socket.emit('game_error', { message: 'خطا در پردازش حدس.' });
+		}
+	});
     
     // --- (۶) راهنمایی (Hint) ---
     socket.on('request_hint', async ({ userId, gameCode, letterPosition }) => {
