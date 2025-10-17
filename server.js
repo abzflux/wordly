@@ -40,6 +40,44 @@ const leagueWords = {
     "رنگ‌ها": ["قرمز", "نارنجی", "زرد", "سبز", "آبی", "نیلی", "بنفش", "صورتی", "قهوه‌ای", "مشکی", "سفید", "خاکستری", "نقره‌ای", "طلایی", "برنزی", "نقره", "طلا", "مس", "برنج", "آهن"]
 };
 
+// --- منطق ربات تلگرام ---
+bot.onText(/\/start/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    const name = msg.from.first_name || msg.from.username || 'کاربر ناشناس';
+
+    try {
+        await pool.query(
+            `INSERT INTO users (telegram_id, name) VALUES ($1, $2)
+            ON CONFLICT (telegram_id) DO UPDATE SET name = EXCLUDED.name`,
+            [userId.toString(), name]
+        );
+        
+        const welcomeMessage = `سلام ${name}، به بازی Wordly خوش آمدید! 🤖`;
+        const inlineKeyboard = {
+            inline_keyboard: [
+                [
+                    {
+                        text: 'شروع بازی (Mini App)',
+                        web_app: { url: FRONTEND_URL }
+                    }
+                ]
+            ]
+        };
+
+        bot.sendMessage(chatId, welcomeMessage, { 
+            reply_markup: inlineKeyboard
+        });
+
+        bot.sendMessage(chatId, `کد کاربری شما: ${userId}`);
+        console.log(`🤖 ربات به کاربر ${userId} پاسخ /start داد.`);
+        
+    } catch (error) {
+        console.error('❌ خطای پردازش فرمان /start:', error);
+        bot.sendMessage(chatId, 'خطایی در ثبت‌نام شما در دیتابیس رخ داد. لطفا دوباره تلاش کنید.');
+    }
+});
+
 // --- توابع کمکی ---
 function generateGameCode() {
     return Math.random().toString(36).substring(2, 6).toUpperCase();
@@ -198,7 +236,6 @@ async function emitGameState(gameCode) {
                 guesser = (await pool.query('SELECT telegram_id, name, score FROM users WHERE telegram_id = $1', [game.guesser_id])).rows[0];
             }
 
-            // ساخت وضعیت بازی برای ارسال
             const gameState = {
                 code: game.code,
                 status: game.status,
@@ -213,18 +250,11 @@ async function emitGameState(gameCode) {
                 startTime: game.start_time,
                 creator: creator,
                 guesser: guesser,
-                // ارسال کلمه فقط در صورت پایان بازی
                 word: (game.status === 'finished' || game.status === 'cancelled') ? game.word : null
             };
             
-            console.log(`📡 ارسال وضعیت بازی ${gameCode}:`, {
-                status: gameState.status,
-                guessesLeft: gameState.guessesLeft,
-                revealedLetters: Object.keys(gameState.revealedLetters).length
-            });
-            
-            // ارسال وضعیت به اتاق بازی
             io.to(gameCode).emit('game_update', gameState);
+            console.log(`📡 وضعیت جدید بازی ${gameCode} ارسال شد. وضعیت: ${game.status}`);
         } else {
             io.to(gameCode).emit('game_error', { message: 'بازی مورد نظر یافت نشد.' });
         }
@@ -312,7 +342,6 @@ async function emitLeagueState(leagueCode) {
             playerCount: players.length
         };
 
-        // ارسال به تمام بازیکنان لیگ
         io.to(leagueCode).emit('leagueStatus', leagueState);
         console.log(`📡 وضعیت لیگ ${leagueCode} ارسال شد. وضعیت: ${league.status}, بازیکنان: ${players.length}`);
 
@@ -323,13 +352,11 @@ async function emitLeagueState(leagueCode) {
 
 async function startLeague(leagueCode) {
     try {
-        // به‌روزرسانی وضعیت لیگ
         await pool.query(
             'UPDATE leagues SET status = $1, start_time = NOW() WHERE code = $2',
             ['starting', leagueCode]
         );
 
-        // دریافت اطلاعات لیگ
         const leagueResult = await pool.query('SELECT * FROM leagues WHERE code = $1', [leagueCode]);
         const league = leagueResult.rows[0];
 
@@ -373,7 +400,6 @@ async function startLeague(leagueCode) {
             `, [league.id, player.user_id, 1, words[0].word, words[0].category, words[0].max_guesses]);
         }
 
-        // ارسال وضعیت شروع
         await emitLeagueState(leagueCode);
 
         // شروع اولین کلمه پس از تأخیر
@@ -383,10 +409,8 @@ async function startLeague(leagueCode) {
                 ['in_progress', leagueCode]
             );
             
-            // ارسال وضعیت جدید
             await emitLeagueState(leagueCode);
             
-            // اطلاع‌رسانی شروع لیگ
             io.to(leagueCode).emit('leagueStarted', {
                 code: leagueCode,
                 status: 'in_progress',
@@ -405,11 +429,9 @@ async function startLeague(leagueCode) {
 
 async function startLeagueWord(leagueCode, wordNumber) {
     try {
-        // دریافت اطلاعات لیگ
         const leagueResult = await pool.query('SELECT * FROM leagues WHERE code = $1', [leagueCode]);
         const league = leagueResult.rows[0];
 
-        // به‌روزرسانی وضعیت کلمه قبلی
         if (wordNumber > 1) {
             await pool.query(`
                 UPDATE league_words SET status = 'completed' 
@@ -417,19 +439,16 @@ async function startLeagueWord(leagueCode, wordNumber) {
             `, [league.id, wordNumber - 1]);
         }
 
-        // به‌روزرسانی وضعیت کلمه جدید
         await pool.query(`
             UPDATE league_words SET status = 'active' 
             WHERE league_id = $1 AND word_number = $2
         `, [league.id, wordNumber]);
 
-        // به‌روزرسانی شماره کلمه فعلی در لیگ
         await pool.query(`
             UPDATE leagues SET current_word_number = $1 
             WHERE code = $2
         `, [wordNumber, leagueCode]);
 
-        // ایجاد/به‌روزرسانی رکوردهای جدید برای بازیکنان
         const playersResult = await pool.query(`
             SELECT user_id FROM league_players WHERE league_id = $1
         `, [league.id]);
@@ -464,10 +483,8 @@ async function startLeagueWord(leagueCode, wordNumber) {
                 currentWord.category, currentWord.max_guesses]);
         }
 
-        // ارسال وضعیت جدید
         await emitLeagueState(leagueCode);
 
-        // اطلاع‌رسانی شروع کلمه جدید
         io.to(leagueCode).emit('leagueWordStarted', {
             code: leagueCode,
             currentWordNumber: wordNumber,
@@ -484,13 +501,11 @@ async function startLeagueWord(leagueCode, wordNumber) {
 
 async function endLeague(leagueCode) {
     try {
-        // به‌روزرسانی وضعیت لیگ
         await pool.query(
             'UPDATE leagues SET status = $1, end_time = NOW() WHERE code = $2',
             ['ended', leagueCode]
         );
 
-        // دریافت برنده لیگ
         const winnerResult = await pool.query(`
             SELECT u.telegram_id, u.name, lp.score
             FROM league_players lp
@@ -502,10 +517,8 @@ async function endLeague(leagueCode) {
 
         const winner = winnerResult.rows[0];
 
-        // ارسال وضعیت نهایی
         await emitLeagueState(leagueCode);
 
-        // اطلاع‌رسانی پایان لیگ
         io.to(leagueCode).emit('leagueEnded', {
             code: leagueCode,
             status: 'ended',
@@ -532,7 +545,6 @@ io.on('connection', (socket) => {
             currentUserId = userId;
             currentUserName = name;
             
-            // ثبت یا به‌روزرسانی کاربر
             await pool.query(
                 `INSERT INTO users (telegram_id, name) VALUES ($1, $2)
                 ON CONFLICT (telegram_id) DO UPDATE SET name = EXCLUDED.name`,
@@ -589,9 +601,8 @@ io.on('connection', (socket) => {
             const gameCode = generateGameCode();
             const maxGuesses = Math.ceil(word.length * 1.5);
             
-            // اعتبارسنجی کلمه - اجازه فاصله در کلمه
             if (!/^[\u0600-\u06FF\s]+$/.test(word) || word.replace(/\s/g, '').length < 3) {
-                 return socket.emit('game_error', { message: 'کلمه وارد شده نامعتبر است. فقط حروف فارسی و فاصله مجاز است و حداقل باید ۳ حرف داشته باشد.' });
+                 return socket.emit('game_error', { message: 'کلمه باید فقط شامل حروف فارسی و فاصله باشد و حداقل ۳ حرف داشته باشد.' });
             }
             
             const result = await pool.query(
@@ -649,12 +660,10 @@ io.on('connection', (socket) => {
                 return socket.emit('game_error', { message: 'بازی پیدا نشد یا قبلاً شروع شده است.' });
             }
 
-            // بررسی اینکه کاربر سازنده بازی نباشد
             if (game.creator_id === userId) {
                 return socket.emit('game_error', { message: 'شما سازنده این بازی هستید و نمی‌توانید به آن بپیوندید.' });
             }
 
-            // به‌روزرسانی وضعیت به in_progress و ثبت حدس‌زننده
             await pool.query(
                 'UPDATE games SET guesser_id = $1, status = $2, start_time = NOW() WHERE code = $3',
                 [userId, 'in_progress', gameCode]
@@ -663,7 +672,6 @@ io.on('connection', (socket) => {
             socket.join(gameCode);
             socket.emit('game_joined', { code: gameCode });
             
-            // ارسال وضعیت جدید بازی به هر دو بازیکن
             await emitGameState(gameCode);
             
             console.log(`🔗 کاربر ${userId} به بازی ${gameCode} پیوست.`);
@@ -677,7 +685,6 @@ io.on('connection', (socket) => {
     // --- (۴-الف) پیوستن به بازی تصادفی ---
     socket.on('join_random_game', async ({ userId }) => {
         try {
-            // پیدا کردن بازی‌های منتظر که کاربر سازنده آنها نیست
             const randomGameResult = await pool.query(`
                 SELECT g.code 
                 FROM games g 
@@ -693,7 +700,6 @@ io.on('connection', (socket) => {
             
             const gameCode = randomGameResult.rows[0].code;
             
-            // پیوستن به بازی
             const gameResult = await pool.query(
                 'SELECT * FROM games WHERE code = $1 AND status = $2', 
                 [gameCode, 'waiting']
@@ -704,7 +710,6 @@ io.on('connection', (socket) => {
                 return socket.emit('game_error', { message: 'بازی پیدا نشد یا قبلاً شروع شده است.' });
             }
 
-            // به‌روزرسانی وضعیت به in_progress و ثبت حدس‌زننده
             await pool.query(
                 'UPDATE games SET guesser_id = $1, status = $2, start_time = NOW() WHERE code = $3',
                 [userId, 'in_progress', gameCode]
@@ -713,7 +718,6 @@ io.on('connection', (socket) => {
             socket.join(gameCode);
             socket.emit('game_joined', { code: gameCode });
             
-            // ارسال وضعیت جدید بازی
             await emitGameState(gameCode);
             
             console.log(`🔗 کاربر ${userId} به بازی تصادفی ${gameCode} پیوست.`);
@@ -806,9 +810,7 @@ io.on('connection', (socket) => {
             let newRevealed = { ...(game.revealed_letters || {}) };
             let indices = [];
             
-            // پیدا کردن تمام موقعیت‌های حرف در کلمه (با نادیده گرفتن فاصله‌ها)
             for (let i = 0; i < game.word.length; i++) {
-                // اگر کاراکتر فاصله نباشد و با حرف حدس زده شده برابر باشد
                 if (game.word[i] !== ' ' && game.word[i] === normalizedLetter) {
                     indices.push(i);
                 }
@@ -816,7 +818,6 @@ io.on('connection', (socket) => {
             
             if (indices.length > 0) {
                 isCorrect = true;
-                // حرف را به لیست حروف آشکار شده اضافه کنید و موقعیت‌های آن را ذخیره کنید
                 if (!newRevealed[normalizedLetter]) {
                     newRevealed[normalizedLetter] = [];
                 }
@@ -831,7 +832,6 @@ io.on('connection', (socket) => {
             let winnerId = null;
             let pointsGained = 0;
             
-            // به‌روزرسانی وضعیت در دیتابیس
             await pool.query(
                 `UPDATE games SET 
                 guesses_left = $1, 
@@ -843,19 +843,16 @@ io.on('connection', (socket) => {
                 [newGuessesLeft, newCorrectGuesses, newIncorrectGuesses, newRevealed, normalizedLetter, gameCode]
             );
 
-            // ارسال پیام به هر دو کاربر
             const messageType = isCorrect ? 'success' : 'error';
             io.to(gameCode).emit('message', { 
                 type: messageType, 
                 text: `${currentUserName} حدس زد: "${normalizedLetter}" - ${isCorrect ? '✅ درست' : '❌ غلط'}` 
             });
 
-            // بررسی پایان بازی
             const wordWithoutSpacesLength = game.word.replace(/\s/g, '').length;
             const revealedCount = Object.values(newRevealed).flat().length;
 
             if (revealedCount === wordWithoutSpacesLength) {
-                // برد
                 gameStatus = 'finished';
                 winnerId = userId;
                 
@@ -871,20 +868,18 @@ io.on('connection', (socket) => {
                 );
                 await updateScoreAndEmitLeaderboard(winnerId, pointsGained);
             } else if (newGuessesLeft <= 0) {
-                // باخت
                 gameStatus = 'finished';
-                pointsGained = -5; // کسر امتیاز از حدس‌زننده بازنده
-                winnerId = game.creator_id; // سازنده برنده می‌شود
+                pointsGained = -5;
+                winnerId = game.creator_id;
                 
                 await pool.query(
                     'UPDATE games SET status = $1, end_time = NOW(), winner_id = $2 WHERE code = $3',
                     [gameStatus, winnerId, gameCode]
                 );
                 await updateScoreAndEmitLeaderboard(userId, pointsGained);
-                await updateScoreAndEmitLeaderboard(winnerId, 10); // ۱۰ امتیاز برای سازنده برنده
+                await updateScoreAndEmitLeaderboard(winnerId, 10);
             }
 
-            // ارسال به‌روزرسانی نهایی یا مرحله‌ای
             if (gameStatus === 'finished') {
                  const winnerName = (await pool.query('SELECT name FROM users WHERE telegram_id = $1', [winnerId])).rows[0]?.name || 'نامشخص';
                  io.to(gameCode).emit('game_finished', { 
@@ -920,12 +915,10 @@ io.on('connection', (socket) => {
             
             const letter = game.word[requestedIndex];
             
-            // بررسی اینکه آیا این حرف فاصله است یا قبلاً حدس زده شده
             if (letter === ' ') {
                 return socket.emit('game_error', { message: 'این موقعیت مربوط به فاصله است.' });
             }
             
-            // بررسی اینکه آیا حرف قبلاً حدس زده شده
             const isAlreadyRevealed = game.revealed_letters && 
                 game.revealed_letters[letter] && 
                 game.revealed_letters[letter].includes(requestedIndex);
@@ -934,16 +927,13 @@ io.on('connection', (socket) => {
                 return socket.emit('game_error', { message: 'این حرف قبلاً حدس زده شده است.' });
             }
             
-            // کسر ۲ امتیاز برای راهنمایی
             const pointsCost = 2;
-            // بررسی و کسر امتیاز
             const updateScoreResult = await pool.query('UPDATE users SET score = score - $1 WHERE telegram_id = $2 AND score >= $1 RETURNING score', [pointsCost, userId]);
             
             if (updateScoreResult.rowCount === 0) {
                  return socket.emit('game_error', { message: 'امتیاز شما برای استفاده از راهنمایی کافی نیست.' });
             }
 
-            // افزودن حرف به حروف آشکار شده
             const newRevealed = { ...(game.revealed_letters || {}) };
             if (!newRevealed[letter]) {
                 newRevealed[letter] = [];
@@ -979,10 +969,8 @@ io.on('connection', (socket) => {
                 return socket.emit('game_error', { message: 'بازی مورد نظر یافت نشد.' });
             }
             
-            // 1. سوکت کاربر را از اتاق خارج کنید
             socket.leave(gameCode);
 
-            // 2. حالت: لغو بازی در انتظار (فقط سازنده)
             if (game.status === 'waiting' && game.creator_id === userId) {
                 await pool.query(
                     'UPDATE games SET status = $1, end_time = NOW() WHERE code = $2',
@@ -996,17 +984,14 @@ io.on('connection', (socket) => {
                 return;
             } 
             
-            // 3. حالت: اعلام باخت در بازی در حال انجام (سازنده یا حدس‌زننده)
             else if (game.status === 'in_progress' && (game.creator_id === userId || game.guesser_id === userId)) {
                 
                 const isCreator = game.creator_id === userId;
-                // برنده کسی است که بازی را ترک نکرده
                 const winnerId = isCreator ? game.guesser_id : game.creator_id;
                 const loserId = userId;
                 const loserName = currentUserName;
 
                 if (!winnerId) {
-                     // در صورت نبود حریف (نباید در in_progress رخ دهد) بازی را لغو کنید
                      await pool.query(
                         'UPDATE games SET status = $1, end_time = NOW() WHERE code = $2',
                         ['cancelled', gameCode]
@@ -1017,31 +1002,35 @@ io.on('connection', (socket) => {
                     return;
                 }
 
-                // به‌روزرسانی وضعیت بازی
                 await pool.query(
                     'UPDATE games SET status = $1, end_time = NOW(), winner_id = $2 WHERE code = $3',
                     ['finished', winnerId, gameCode]
                 );
                 
-                // به‌روزرسانی امتیازات: برنده +10، بازنده -5
                 const winnerName = (await pool.query('SELECT name FROM users WHERE telegram_id = $1', [winnerId])).rows[0]?.name || 'حریف';
                 await updateScoreAndEmitLeaderboard(winnerId, 10);
                 await updateScoreAndEmitLeaderboard(loserId, -5);
 
-                // ارسال به اتاق (برای برنده)
                 io.to(gameCode).emit('game_finished', { 
                     winnerName: winnerName, 
                     points: 10,
-                    forfeit: true, // نشان دهنده اعلام باخت
+                    forfeit: true,
                     forfeiterName: loserName,
-                    word: game.word // ارسال کلمه برای فاش شدن
+                    word: game.word
+                });
+                
+                socket.emit('game_finished', { 
+                    winnerName: winnerName, 
+                    points: -5,
+                    forfeit: true,
+                    forfeiterName: loserName,
+                    word: game.word
                 });
                 
                 console.log(`⚔️ بازی ${gameCode} توسط ${loserName} باخت اعلام شد. برنده: ${winnerName}`);
                 return;
             }
             
-            // 4. سایر حالت‌ها
             socket.emit('game_error', { message: 'عملیات ترک بازی غیرمجاز است.' });
 
         } catch (error) {
@@ -1089,7 +1078,6 @@ io.on('connection', (socket) => {
                 return socket.emit('league_error', { message: 'لیگ پیدا نشد یا قبلاً شروع شده است.' });
             }
             
-            // بررسی اینکه کاربر قبلاً عضو لیگ نباشد
             const existingPlayer = await pool.query(`
                 SELECT * FROM league_players 
                 WHERE league_id = $1 AND user_id = $2
@@ -1126,7 +1114,6 @@ io.on('connection', (socket) => {
                 return socket.emit('league_error', { message: 'لیگ پیدا نشد.' });
             }
             
-            // بررسی اینکه کاربر سازنده لیگ باشد
             const creatorCheck = await pool.query(`
                 SELECT * FROM league_players 
                 WHERE league_id = $1 AND user_id = $2
@@ -1136,7 +1123,6 @@ io.on('connection', (socket) => {
                 return socket.emit('league_error', { message: 'فقط سازنده لیگ می‌تواند آن را شروع کند.' });
             }
             
-            // بررسی حداقل تعداد بازیکنان
             const playerCountResult = await pool.query(`
                 SELECT COUNT(*) FROM league_players WHERE league_id = $1
             `, [league.id]);
@@ -1189,7 +1175,6 @@ io.on('connection', (socket) => {
             let newRevealed = { ...(currentWord.revealed_letters || {}) };
             let indices = [];
             
-            // پیدا کردن تمام موقعیت‌های حرف در کلمه (با نادیده گرفتن فاصله‌ها)
             for (let i = 0; i < currentWord.word.length; i++) {
                 if (currentWord.word[i] !== ' ' && currentWord.word[i] === normalizedLetter) {
                     indices.push(i);
@@ -1212,7 +1197,6 @@ io.on('connection', (socket) => {
             let scoreEarned = 0;
             let timeTaken = 0;
             
-            // به‌روزرسانی وضعیت در دیتابیس
             await pool.query(`
                 UPDATE league_player_words SET 
                 guesses_left = $1, 
@@ -1224,7 +1208,6 @@ io.on('connection', (socket) => {
             `, [newGuessesLeft, newCorrectGuesses, newIncorrectGuesses, newRevealed, normalizedLetter, 
                 league.id, userId, league.current_word_number]);
 
-            // بررسی پایان کلمه
             const wordWithoutSpacesLength = currentWord.word.replace(/\s/g, '').length;
             const revealedCount = Object.values(newRevealed).flat().length;
 
@@ -1251,7 +1234,6 @@ io.on('connection', (socket) => {
                     WHERE league_id = $3 AND user_id = $4
                 `, [scoreEarned, timeTaken, league.id, userId]);
                 
-                // ارسال پیام موفقیت
                 io.to(leagueCode).emit('league_message', {
                     text: `🎉 ${currentUserName} کلمه "${currentWord.word}" را با موفقیت حدس زد! (+${scoreEarned} امتیاز)`
                 });
@@ -1265,18 +1247,14 @@ io.on('connection', (socket) => {
                     WHERE league_id = $2 AND user_id = $3 AND word_number = $4
                 `, [wordStatus, league.id, userId, league.current_word_number]);
                 
-                // ارسال پیام شکست
                 io.to(leagueCode).emit('league_message', {
                     text: `❌ ${currentUserName} نتوانست کلمه "${currentWord.word}" را حدس بزند.`
                 });
             }
 
-            // ارسال به‌روزرسانی وضعیت لیگ
             await emitLeagueState(leagueCode);
 
-            // اگر کلمه تمام شده، بررسی حرکت به کلمه بعدی
             if (wordStatus === 'completed' || wordStatus === 'failed') {
-                // بررسی اینکه آیا همه بازیکنان این کلمه را تمام کرده‌اند
                 const remainingPlayersResult = await pool.query(`
                     SELECT COUNT(*) FROM league_player_words
                     WHERE league_id = $1 AND word_number = $2 AND status = 'in_progress'
@@ -1285,7 +1263,6 @@ io.on('connection', (socket) => {
                 const remainingPlayers = parseInt(remainingPlayersResult.rows[0].count);
                 
                 if (remainingPlayers === 0) {
-                    // حرکت به کلمه بعدی
                     const nextWordNumber = league.current_word_number + 1;
                     
                     if (nextWordNumber <= league.total_words) {
@@ -1293,7 +1270,6 @@ io.on('connection', (socket) => {
                             startLeagueWord(leagueCode, nextWordNumber);
                         }, 3000);
                     } else {
-                        // پایان لیگ
                         setTimeout(() => {
                             endLeague(leagueCode);
                         }, 5000);
