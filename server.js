@@ -1,3 +1,6 @@
+// Add these to the top of SERVER5.js
+const https = require('https');
+const fs = require('fs');
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
