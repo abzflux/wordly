@@ -6,39 +6,6 @@ const cors = require('cors');
 
 
 
-const app = express();
-
-const server = app.listen(process.env.PORT || 3000, () => {
-    console.log(`سرور در پورت ${process.env.PORT || 3000} اجرا شد`);
-});
-
-const io = new Server(server, {
-    cors: {
-        origin: 'https://wordlybot.ct.ws', // دامنه کلاینت شما
-        methods: ['GET', 'POST'],
-        credentials: true // اجازه ارسال credentials
-    }
-});
-
-// middleware برای درخواست‌های HTTP
-app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', 'https://wordlybot.ct.ws');
-    res.header('Access-Control-Allow-Methods', 'GET, POST');
-    res.header('Access-Control-Allow-Credentials', 'true');
-    next();
-});
-
-// route تست برای بررسی سرور
-app.get('/', (req, res) => {
-    res.send('<h1>Wordly Server is Running! 🚀</h1><p>Socket.IO is ready.</p>');
-});
-
-
-
-
-
-
-
 // --- Telegram Bot Library ---
 const TelegramBot = require('node-telegram-bot-api');
 
@@ -246,12 +213,16 @@ async function setupDatabase() {
 const app = express();
 const server = http.createServer(app);
 
+
+
+// --- تنظیمات CORS برای Express ---
 app.use(cors({
     origin: FRONTEND_URL,
-    methods: ['GET', 'POST']
+    methods: ['GET', 'POST'],
+    credentials: true
 }));
-
 app.use(express.json());
+
 
 const io = new Server(server, {
     cors: {
