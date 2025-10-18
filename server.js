@@ -7,6 +7,7 @@ const cors = require('cors');
 // --- Telegram Bot Library ---
 const TelegramBot = require('node-telegram-bot-api');
 
+
 // --- تنظیمات و متغیرهای محیطی ---
 const BOT_TOKEN = '8408419647:AAGuoIwzH-_S0jXWshGs-jz4CCTJgc_tfdQ';
 const DATABASE_URL = 'postgresql://abzx:RsDq7AmdXXj9WOnACP0RTxonFuKIaJki@dpg-d3oj7rmuk2gs73cscc6g-a.frankfurt-postgres.render.com/wordlydb_7vux';
@@ -658,6 +659,34 @@ io.on('connection', (socket) => {
         }
     });
 
+    // --- لیست بازی‌های فعال کاربر ---
+    socket.on('get_active_games', async ({ userId }) => {
+        try {
+            const result = await pool.query(`
+                SELECT g.code, g.category, g.status, creator.name as creator_name, guesser.name as guesser_name
+                FROM games g
+                LEFT JOIN users creator ON g.creator_id = creator.telegram_id
+                LEFT JOIN users guesser ON g.guesser_id = guesser.telegram_id
+                WHERE (g.creator_id = $1 OR g.guesser_id = $1)
+                AND g.status IN ('waiting', 'in_progress')
+                ORDER BY g.start_time DESC
+            `, [userId]);
+            
+            const activeGames = result.rows.map(game => ({
+                code: game.code,
+                category: game.category,
+                status: game.status === 'waiting' ? 'منتظر' : 'در حال انجام',
+                guesserName: game.guesser_name
+            }));
+            
+            socket.emit('active_games_list', activeGames);
+            
+        } catch (error) {
+            console.error('❌ خطای دریافت بازی‌های فعال:', error);
+            socket.emit('game_error', { message: 'خطا در دریافت بازی‌های فعال.' });
+        }
+    });
+
     // --- (۴) پیوستن به بازی ---
     socket.on('join_game', async ({ userId, gameCode }) => {
         try {
@@ -685,6 +714,10 @@ io.on('connection', (socket) => {
             
             await emitGameState(gameCode);
             
+            // ارسال نوتیفیکیشن به creator
+            io.to(`user:${game.creator_id}`).emit('game_started', { code: gameCode });
+            bot.sendMessage(game.creator_id, `بازی شما با کد ${gameCode} شروع شد! یک بازیکن به آن پیوست. وضعیت را چک کنید.`);
+
             console.log(`🔗 کاربر ${userId} به بازی ${gameCode} پیوست.`);
             
         } catch (error) {
@@ -731,6 +764,10 @@ io.on('connection', (socket) => {
             
             await emitGameState(gameCode);
             
+            // ارسال نوتیفیکیشن به creator
+            io.to(`user:${game.creator_id}`).emit('game_started', { code: gameCode });
+            bot.sendMessage(game.creator_id, `بازی شما با کد ${gameCode} شروع شد! یک بازیکن به آن پیوست. وضعیت را چک کنید.`);
+
             console.log(`🔗 کاربر ${userId} به بازی تصادفی ${gameCode} پیوست.`);
             
         } catch (error) {
