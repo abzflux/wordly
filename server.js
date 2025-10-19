@@ -224,7 +224,7 @@ bot.onText(/\/start/, async (msg) => {
 });
 
 // --- توابع مدیریت وضعیت ---
-async function emitGameState(gameCode, socketId = null) {
+async function emitGameState(gameCode, socketId = null, requestingUserId = null) {
     try {
         const result = await pool.query('SELECT * FROM games WHERE code = $1', [gameCode]);
         const game = result.rows[0];
@@ -234,6 +234,16 @@ async function emitGameState(gameCode, socketId = null) {
             let guesser = null;
             if (game.guesser_id) {
                 guesser = (await pool.query('SELECT telegram_id, name, score FROM users WHERE telegram_id = $1', [game.guesser_id])).rows[0];
+            }
+
+            // تعیین نقش کاربر درخواست‌کننده
+            let userRole = 'spectator';
+            if (requestingUserId) {
+                if (requestingUserId === game.creator_id) {
+                    userRole = 'creator';
+                } else if (game.guesser_id && requestingUserId === game.guesser_id) {
+                    userRole = 'guesser';
+                }
             }
 
             const gameState = {
@@ -250,7 +260,9 @@ async function emitGameState(gameCode, socketId = null) {
                 startTime: game.start_time,
                 creator: creator,
                 guesser: guesser,
-                word: (game.status === 'finished' || game.status === 'cancelled') ? game.word : null
+                word: (game.status === 'finished' || game.status === 'cancelled') ? game.word : null,
+                userRole: userRole, // اضافه شدن نقش کاربر
+                canViewWord: userRole === 'creator' || game.status === 'finished' || game.status === 'cancelled'
             };
             
             if (socketId) {
@@ -258,13 +270,21 @@ async function emitGameState(gameCode, socketId = null) {
             } else {
                 io.to(gameCode).emit('game_update', gameState);
             }
-            console.log(`📡 وضعیت جدید بازی ${gameCode} ارسال شد. وضعیت: ${game.status}`);
+            console.log(`📡 وضعیت جدید بازی ${gameCode} ارسال شد. وضعیت: ${game.status}, نقش کاربر: ${userRole}`);
         } else {
-            io.to(gameCode).emit('game_error', { message: 'بازی مورد نظر یافت نشد.' });
+            if (socketId) {
+                io.to(socketId).emit('game_error', { message: 'بازی مورد نظر یافت نشد.' });
+            } else {
+                io.to(gameCode).emit('game_error', { message: 'بازی مورد نظر یافت نشد.' });
+            }
         }
     } catch (error) {
         console.error(`❌ خطای ارسال وضعیت بازی ${gameCode}:`, error);
-        io.to(gameCode).emit('game_error', { message: 'خطا در fetch وضعیت بازی.' });
+        if (socketId) {
+            io.to(socketId).emit('game_error', { message: 'خطا در fetch وضعیت بازی.' });
+        } else {
+            io.to(gameCode).emit('game_error', { message: 'خطا در fetch وضعیت بازی.' });
+        }
     }
 }
 
@@ -574,7 +594,7 @@ io.on('connection', (socket) => {
             for (const game of activeGamesResult.rows) {
                 socket.join(game.code);
                 console.log(`🔗 کاربر ${userId} به بازی فعال ${game.code} ملحق شد.`);
-                await emitGameState(game.code, socket.id);
+                await emitGameState(game.code, socket.id, userId);
             }
 
             // اتصال مجدد به لیگ فعال
@@ -625,7 +645,7 @@ io.on('connection', (socket) => {
             socket.join(gameCode);
             socket.emit('game_created', { code: gameCode });
             console.log(`🎮 بازی جدید ایجاد شد: ${gameCode} توسط ${userId} - کلمه: "${word}"`);
-            await emitGameState(gameCode);
+            await emitGameState(gameCode, null, userId);
             
         } catch (error) {
             console.error('❌ خطای ایجاد بازی:', error);
@@ -666,6 +686,8 @@ io.on('connection', (socket) => {
                     g.code, 
                     g.category, 
                     g.status,
+                    g.creator_id,
+                    g.guesser_id,
                     creator.name as creator_name, 
                     guesser.name as guesser_name
                 FROM games g
@@ -681,7 +703,8 @@ io.on('connection', (socket) => {
                 category: game.category,
                 status: game.status === 'waiting' ? 'منتظر' : 'در حال انجام',
                 creatorName: game.creator_name,
-                guesserName: game.guesser_name
+                guesserName: game.guesser_name,
+                userRole: game.creator_id === userId ? 'creator' : 'guesser'
             }));
             
             socket.emit('active_games_list', activeGames);
@@ -707,8 +730,8 @@ io.on('connection', (socket) => {
                 return socket.emit('game_error', { message: 'شما به این بازی دسترسی ندارید.' });
             }
 
-            // ارسال وضعیت کامل بازی
-            await emitGameState(gameCode, socket.id);
+            // ارسال وضعیت کامل بازی با نقش کاربر
+            await emitGameState(gameCode, socket.id, userId);
             
         } catch (error) {
             console.error('❌ خطای دریافت وضعیت بازی:', error);
@@ -741,7 +764,7 @@ io.on('connection', (socket) => {
             socket.join(gameCode);
             socket.emit('game_joined', { code: gameCode });
             
-            await emitGameState(gameCode);
+            await emitGameState(gameCode, null, userId);
             
             // ارسال نوتیفیکیشن به creator
             io.to(`user:${game.creator_id}`).emit('game_started', { code: gameCode });
@@ -791,7 +814,7 @@ io.on('connection', (socket) => {
             socket.join(gameCode);
             socket.emit('game_joined', { code: gameCode });
             
-            await emitGameState(gameCode);
+            await emitGameState(gameCode, null, userId);
             
             // ارسال نوتیفیکیشن به creator
             io.to(`user:${game.creator_id}`).emit('game_started', { code: gameCode });
